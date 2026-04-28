@@ -7,6 +7,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ## [Unreleased]
 
 ### Added
+- **Diff preview before Accept (in-editor BubbleMenu and quick-edit popup).**
+  - Word-level diff (via `diff` package's `diffWordsWithSpace`) shown as the default `ready`-phase view: removals struck through in red, additions highlighted in green.
+  - "Show plain / Show diff" toggle on the bubble lets you flip to the raw rewrite.
+  - `originalText` is captured at action start and threaded into the bubble props.
+- **In-app rewrite history with one-click Revert (main editor only).**
+  - Last 20 accepted rewrites kept in memory: `{ id, timestamp, action, original, rewrite }`.
+  - History button in the header opens a modal listing each entry with its action label, time-ago timestamp, inline diff, and a Revert button.
+  - Revert finds the rewrite text in the current document via `findTextRangeInDoc` (a PM-doc walk that builds a text+positions map) and replaces it with the original. Refuses to revert if the rewrite no longer appears or appears more than once.
+  - Quick-edit popup writes to other apps, so it relies on the host app's native undo and is not tracked here.
 - **README.md** — top-level docs covering features, stack, prerequisites, run/build steps, settings, layout, and known limitations.
 - **Milestone 4 — Global shortcut + system-wide quick-edit popup.**
   - New frameless `quick-edit` window (always-on-top, no taskbar icon, hidden until invoked) declared in `tauri.conf.json`.

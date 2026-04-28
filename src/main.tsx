@@ -7,6 +7,8 @@ import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { diffWordsWithSpace, type Change } from "diff";
+import type { Node as PMNode } from "@tiptap/pm/model";
 import "./index.css";
 
 // ---------- Action catalog ----------
@@ -189,12 +191,18 @@ function App() {
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [streamed, setStreamed] = useState("");
+  const [originalText, setOriginalText] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<ActionId | null>(null);
   const [pendingPrompt, setPendingPrompt] = useState<string>("");
   const [showTone, setShowTone] = useState(false);
   const [showCustom, setShowCustom] = useState(false);
   const [customDraft, setCustomDraft] = useState("");
+  const [diffMode, setDiffMode] = useState(true);
+
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [revertError, setRevertError] = useState<string | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const selectionRef = useRef<{ from: number; to: number } | null>(null);
@@ -205,6 +213,7 @@ function App() {
     selectionRef.current = null;
     setPhase("idle");
     setStreamed("");
+    setOriginalText("");
     setErrorMsg(null);
     setPendingAction(null);
     setPendingPrompt("");
@@ -228,6 +237,7 @@ function App() {
 
       setPendingAction(action);
       setPendingPrompt(customPromptOverride ?? "");
+      setOriginalText(input);
       setPhase("streaming");
       setStreamed("");
       setErrorMsg(null);
@@ -253,7 +263,7 @@ function App() {
   );
 
   const accept = useCallback(() => {
-    if (!editor || !selectionRef.current) return;
+    if (!editor || !selectionRef.current || !pendingAction) return;
     const { from, to } = selectionRef.current;
     editor
       .chain()
@@ -261,8 +271,42 @@ function App() {
       .setTextSelection({ from, to })
       .insertContent(streamed)
       .run();
+    setHistory((h) =>
+      [
+        {
+          id: cryptoId(),
+          timestamp: Date.now(),
+          action: pendingAction,
+          original: originalText,
+          rewrite: streamed,
+        },
+        ...h,
+      ].slice(0, 20),
+    );
     resetBubble();
-  }, [editor, streamed, resetBubble]);
+  }, [editor, streamed, originalText, pendingAction, resetBubble]);
+
+  const revert = useCallback(
+    (entry: HistoryEntry) => {
+      if (!editor) return;
+      setRevertError(null);
+      const range = findTextRangeInDoc(editor.state.doc, entry.rewrite);
+      if (!range) {
+        setRevertError(
+          `Couldn't locate the rewrite in the document — it may have been edited or removed.`,
+        );
+        return;
+      }
+      editor
+        .chain()
+        .focus()
+        .setTextSelection(range)
+        .insertContent(entry.original)
+        .run();
+      setHistory((h) => h.filter((x) => x.id !== entry.id));
+    },
+    [editor],
+  );
 
   const regenerate = useCallback(() => {
     if (pendingAction) void runAction(pendingAction, pendingPrompt);
@@ -280,6 +324,13 @@ function App() {
           </span>
           <button
             type="button"
+            onClick={() => setShowHistory(true)}
+            className="rounded border border-zinc-200 px-2 py-1 hover:bg-zinc-50"
+          >
+            History ({history.length})
+          </button>
+          <button
+            type="button"
             onClick={() => setShowSettings(true)}
             className="rounded border border-zinc-200 px-2 py-1 hover:bg-zinc-50"
           >
@@ -294,6 +345,21 @@ function App() {
           onSave={(s) => {
             setSettings(s);
             setShowSettings(false);
+          }}
+        />
+      )}
+      {showHistory && (
+        <HistoryPanel
+          entries={history}
+          revertError={revertError}
+          onRevert={revert}
+          onClear={() => {
+            setHistory([]);
+            setRevertError(null);
+          }}
+          onClose={() => {
+            setShowHistory(false);
+            setRevertError(null);
           }}
         />
       )}
@@ -316,6 +382,9 @@ function App() {
           <BubbleContent
             phase={phase}
             streamed={streamed}
+            originalText={originalText}
+            diffMode={diffMode}
+            onToggleDiffMode={() => setDiffMode((v) => !v)}
             errorMsg={errorMsg}
             showTone={showTone}
             showCustom={showCustom}
@@ -354,6 +423,9 @@ function App() {
 interface BubbleProps {
   phase: Phase;
   streamed: string;
+  originalText: string;
+  diffMode: boolean;
+  onToggleDiffMode: () => void;
   errorMsg: string | null;
   showTone: boolean;
   showCustom: boolean;
@@ -413,11 +485,33 @@ function BubbleContent(p: BubbleProps) {
   }
 
   return (
-    <div className="flex w-[420px] flex-col gap-2 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg">
+    <div className="flex w-[480px] flex-col gap-2 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg">
       {p.phase === "error" ? (
         <div className="rounded bg-red-50 p-2 text-xs text-red-700">
           {p.errorMsg || "Rewrite failed."}
         </div>
+      ) : p.phase === "ready" ? (
+        <>
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-400">
+              {p.diffMode ? "Diff" : "Rewrite"}
+            </span>
+            <button
+              type="button"
+              onClick={p.onToggleDiffMode}
+              className="text-[11px] text-zinc-500 hover:text-zinc-700"
+            >
+              {p.diffMode ? "Show plain" : "Show diff"}
+            </button>
+          </div>
+          <div className="max-h-48 overflow-y-auto rounded bg-zinc-50 p-2 text-sm text-zinc-800">
+            {p.diffMode ? (
+              <DiffView original={p.originalText} rewrite={p.streamed} />
+            ) : (
+              p.streamed
+            )}
+          </div>
+        </>
       ) : (
         <div className="max-h-40 overflow-y-auto rounded bg-zinc-50 p-2 text-sm text-zinc-800">
           {p.streamed || <span className="text-zinc-400">Thinking…</span>}
@@ -598,6 +692,7 @@ function QuickEdit() {
   const [showTone, setShowTone] = useState(false);
   const [showCustom, setShowCustom] = useState(false);
   const [customDraft, setCustomDraft] = useState("");
+  const [diffMode, setDiffMode] = useState(true);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -741,6 +836,24 @@ function QuickEdit() {
             <div className="rounded bg-red-50 p-2 text-xs text-red-700">
               {errorMsg || "Rewrite failed."}
             </div>
+          ) : phase === "ready" ? (
+            <>
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-400">
+                  {diffMode ? "Diff" : "Rewrite"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setDiffMode((v) => !v)}
+                  className="text-[11px] text-zinc-500 hover:text-zinc-700"
+                >
+                  {diffMode ? "Show plain" : "Show diff"}
+                </button>
+              </div>
+              <div className="max-h-40 flex-1 overflow-y-auto rounded bg-zinc-50 p-2 text-sm text-zinc-800">
+                {diffMode ? <DiffView original={input} rewrite={streamed} /> : streamed}
+              </div>
+            </>
           ) : (
             <div className="max-h-32 flex-1 overflow-y-auto rounded bg-zinc-50 p-2 text-sm text-zinc-800">
               {streamed || <span className="text-zinc-400">Thinking…</span>}
@@ -771,6 +884,189 @@ function QuickEdit() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ---------- Diff view ----------
+
+function DiffView({ original, rewrite }: { original: string; rewrite: string }) {
+  const parts: Change[] = diffWordsWithSpace(original, rewrite);
+  return (
+    <div className="whitespace-pre-wrap break-words leading-relaxed">
+      {parts.map((p, i) => {
+        if (p.added) {
+          return (
+            <span key={i} className="rounded bg-green-100 text-green-900">
+              {p.value}
+            </span>
+          );
+        }
+        if (p.removed) {
+          return (
+            <span key={i} className="rounded bg-red-100 text-red-700 line-through">
+              {p.value}
+            </span>
+          );
+        }
+        return <span key={i}>{p.value}</span>;
+      })}
+    </div>
+  );
+}
+
+// ---------- History ----------
+
+interface HistoryEntry {
+  id: string;
+  timestamp: number;
+  action: ActionId;
+  original: string;
+  rewrite: string;
+}
+
+function actionLabel(id: ActionId): string {
+  switch (id) {
+    case "improve":
+      return "Improve";
+    case "grammar":
+      return "Fix grammar";
+    case "shorten":
+      return "Shorten";
+    case "expand":
+      return "Expand";
+    case "custom":
+      return "Custom";
+    default:
+      if (id.startsWith("tone:")) return `Tone: ${id.slice("tone:".length)}`;
+      return id;
+  }
+}
+
+function timeAgo(ts: number, now: number): string {
+  const s = Math.max(0, Math.floor((now - ts) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
+}
+
+function cryptoId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+// Walks the ProseMirror doc and finds `needle` in the concatenated text.
+// Returns the PM range, or null if missing or non-unique.
+function findTextRangeInDoc(doc: PMNode, needle: string): { from: number; to: number } | null {
+  if (!needle) return null;
+  const positions: number[] = [];
+  let text = "";
+  doc.descendants((node, pos) => {
+    if (node.isText && node.text) {
+      for (let i = 0; i < node.text.length; i++) positions.push(pos + i);
+      text += node.text;
+    }
+    return true;
+  });
+  const idx = text.indexOf(needle);
+  if (idx === -1) return null;
+  if (text.indexOf(needle, idx + 1) !== -1) return null;
+  const from = positions[idx];
+  const to = positions[idx + needle.length - 1] + 1;
+  return { from, to };
+}
+
+function HistoryPanel({
+  entries,
+  revertError,
+  onRevert,
+  onClear,
+  onClose,
+}: {
+  entries: HistoryEntry[];
+  revertError: string | null;
+  onRevert: (e: HistoryEntry) => void;
+  onClear: () => void;
+  onClose: () => void;
+}) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[80vh] w-[560px] flex-col rounded-lg border border-zinc-200 bg-white shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
+          <h2 className="text-base font-semibold text-zinc-800">History</h2>
+          <div className="flex items-center gap-2">
+            {entries.length > 0 && (
+              <button
+                type="button"
+                onClick={onClear}
+                className="text-xs text-zinc-500 hover:text-zinc-800"
+              >
+                Clear all
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-zinc-400 hover:text-zinc-700"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+        {revertError && (
+          <div className="border-b border-red-100 bg-red-50 px-4 py-2 text-xs text-red-700">
+            {revertError}
+          </div>
+        )}
+        <div className="flex-1 overflow-y-auto px-4 py-3">
+          {entries.length === 0 ? (
+            <p className="py-8 text-center text-sm text-zinc-400">
+              No rewrites yet. Accept a rewrite from the bubble to start tracking.
+            </p>
+          ) : (
+            <ul className="space-y-3">
+              {entries.map((e) => (
+                <li
+                  key={e.id}
+                  className="rounded border border-zinc-200 bg-zinc-50 p-3 text-sm"
+                >
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-xs font-medium text-zinc-600">
+                      {actionLabel(e.action)} · {timeAgo(e.timestamp, now)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onRevert(e)}
+                      className="rounded bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-200"
+                    >
+                      Revert
+                    </button>
+                  </div>
+                  <DiffView original={e.original} rewrite={e.rewrite} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
