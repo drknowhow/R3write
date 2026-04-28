@@ -4,6 +4,9 @@ import { BubbleMenu, EditorContent, useEditor } from "@tiptap/react";
 import type { Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import "./index.css";
 
 // ---------- Action catalog ----------
@@ -572,11 +575,221 @@ function BubbleButton({
   );
 }
 
+// ---------- Quick-edit popup ----------
+//
+// Rendered in the frameless `quick-edit` window opened by the Rust shortcut
+// handler (Ctrl+Alt+G). Receives the captured selection via the
+// "captured-text" event, runs an action through the same OllamaClient, and
+// asks Rust to paste the rewrite back into the originating app.
+
+function QuickEdit() {
+  const [settings, setSettings] = useState<OllamaSettings>(() => loadSettings());
+  const clientRef = useRef<OllamaClient>(new OllamaClient(settings));
+  useEffect(() => {
+    clientRef.current = new OllamaClient(settings);
+  }, [settings]);
+
+  const [input, setInput] = useState<string>("");
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [streamed, setStreamed] = useState("");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<ActionId | null>(null);
+  const [pendingPrompt, setPendingPrompt] = useState("");
+  const [showTone, setShowTone] = useState(false);
+  const [showCustom, setShowCustom] = useState(false);
+  const [customDraft, setCustomDraft] = useState("");
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<string>("captured-text", (event) => {
+      setSettings(loadSettings());
+      setInput(event.payload);
+      setPhase("idle");
+      setStreamed("");
+      setErrorMsg(null);
+      setPendingAction(null);
+      setPendingPrompt("");
+      setShowTone(false);
+      setShowCustom(false);
+      setCustomDraft("");
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
+  const dismiss = useCallback(() => {
+    abortRef.current?.abort();
+    void invoke("dismiss_popup");
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") dismiss();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [dismiss]);
+
+  const runAction = useCallback(
+    async (action: ActionId, customPromptOverride?: string) => {
+      if (!input.trim()) return;
+      abortRef.current?.abort();
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      setPendingAction(action);
+      setPendingPrompt(customPromptOverride ?? "");
+      setPhase("streaming");
+      setStreamed("");
+      setErrorMsg(null);
+      try {
+        let acc = "";
+        for await (const chunk of clientRef.current.rewrite(input, action, {
+          signal: ctrl.signal,
+          customPrompt: customPromptOverride,
+        })) {
+          if (ctrl.signal.aborted) return;
+          acc += chunk;
+          setStreamed(acc);
+        }
+        if (!ctrl.signal.aborted) setPhase("ready");
+      } catch (e) {
+        if (ctrl.signal.aborted) return;
+        setErrorMsg(e instanceof Error ? e.message : String(e));
+        setPhase("error");
+      }
+    },
+    [input],
+  );
+
+  const accept = useCallback(() => {
+    void invoke("accept_rewrite", { text: streamed });
+  }, [streamed]);
+
+  const regenerate = useCallback(() => {
+    if (pendingAction) void runAction(pendingAction, pendingPrompt);
+  }, [pendingAction, pendingPrompt, runAction]);
+
+  return (
+    <div className="flex h-full flex-col gap-2 rounded-lg border border-zinc-300 bg-white p-3 shadow-2xl">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+          Quick edit · {settings.model}
+        </span>
+        <button
+          type="button"
+          onClick={dismiss}
+          className="text-xs text-zinc-400 hover:text-zinc-700"
+          title="Esc"
+        >
+          ✕
+        </button>
+      </div>
+      <div className="max-h-16 overflow-y-auto rounded bg-zinc-50 px-2 py-1 text-xs text-zinc-600">
+        {input || <span className="italic text-zinc-400">Select text in any app, then press Ctrl+Alt+G.</span>}
+      </div>
+      {phase === "idle" ? (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap gap-1">
+            {PRIMARY_ACTIONS.map((a) => (
+              <BubbleButton key={a.id} onClick={() => runAction(a.id)}>
+                {a.label}
+              </BubbleButton>
+            ))}
+            <BubbleButton onClick={() => { setShowTone((v) => !v); setShowCustom(false); }} active={showTone}>
+              Tone ▾
+            </BubbleButton>
+            <BubbleButton onClick={() => { setShowCustom((v) => !v); setShowTone(false); }} active={showCustom}>
+              Custom…
+            </BubbleButton>
+          </div>
+          {showTone && (
+            <div className="flex flex-wrap gap-1 border-t border-zinc-100 pt-2">
+              {TONE_ACTIONS.map((a) => (
+                <BubbleButton key={a.id} onClick={() => runAction(a.id)}>
+                  {a.label}
+                </BubbleButton>
+              ))}
+            </div>
+          )}
+          {showCustom && (
+            <div className="flex gap-1 border-t border-zinc-100 pt-2">
+              <input
+                autoFocus
+                value={customDraft}
+                onChange={(e) => setCustomDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && customDraft.trim()) runAction("custom", customDraft.trim());
+                }}
+                placeholder="Describe the rewrite…"
+                className="flex-1 rounded border border-zinc-200 px-2 py-1 text-sm outline-none focus:border-indigo-400"
+              />
+              <BubbleButton
+                onClick={() => customDraft.trim() && runAction("custom", customDraft.trim())}
+              >
+                Run
+              </BubbleButton>
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
+          {phase === "error" ? (
+            <div className="rounded bg-red-50 p-2 text-xs text-red-700">
+              {errorMsg || "Rewrite failed."}
+            </div>
+          ) : (
+            <div className="max-h-32 flex-1 overflow-y-auto rounded bg-zinc-50 p-2 text-sm text-zinc-800">
+              {streamed || <span className="text-zinc-400">Thinking…</span>}
+              {phase === "streaming" && (
+                <span className="ml-0.5 animate-pulse text-indigo-500">▍</span>
+              )}
+            </div>
+          )}
+          <div className="flex justify-end gap-1">
+            {phase === "streaming" && <BubbleButton onClick={dismiss}>Cancel</BubbleButton>}
+            {phase === "ready" && (
+              <>
+                <BubbleButton onClick={dismiss}>Reject</BubbleButton>
+                <BubbleButton onClick={regenerate}>Regenerate</BubbleButton>
+                <BubbleButton onClick={accept} primary>
+                  Accept &amp; paste
+                </BubbleButton>
+              </>
+            )}
+            {phase === "error" && (
+              <>
+                <BubbleButton onClick={dismiss}>Dismiss</BubbleButton>
+                <BubbleButton onClick={regenerate} primary>
+                  Retry
+                </BubbleButton>
+              </>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // Re-export type for downstream files (none yet, but useful when we split).
 export type { LLMClient, ActionId, Editor };
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
+// ---------- Window routing ----------
+
+function getWindowLabel(): string {
+  try {
+    return getCurrentWebviewWindow().label;
+  } catch {
+    return "main";
+  }
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root")!);
+const label = getWindowLabel();
+root.render(
+  <React.StrictMode>{label === "quick-edit" ? <QuickEdit /> : <App />}</React.StrictMode>,
 );

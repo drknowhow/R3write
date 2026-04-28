@@ -7,6 +7,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ## [Unreleased]
 
 ### Added
+- **Milestone 4 — Global shortcut + system-wide quick-edit popup.**
+  - New frameless `quick-edit` window (always-on-top, no taskbar icon, hidden until invoked) declared in `tauri.conf.json`.
+  - Global shortcut **Ctrl+Alt+G** registered via `tauri-plugin-global-shortcut`.
+  - Trigger flow (Rust): save current clipboard → simulate `Ctrl+C` (via `enigo`) → read selection from clipboard → bail if empty → position popup at cursor and emit `captured-text` event.
+  - `accept_rewrite` Tauri command: hide popup, wait for focus to return to the originating app, write rewrite to clipboard, simulate `Ctrl+V`, then restore the original clipboard contents.
+  - `dismiss_popup` Tauri command (Esc / Reject) restores the original clipboard without pasting.
+  - `QuickEdit` React component in `src/main.tsx` shares `OllamaClient` + settings with the main editor; window-aware routing in `main.tsx` decides which UI to render based on `getCurrentWebviewWindow().label`.
+  - Capability allowlist extended to both windows and includes `clipboard-manager:default` and `global-shortcut:default`.
 - **Milestone 3 — Ollama integration (cloud + local).**
   - Replaced `MockLLM` with `OllamaClient` (same `LLMClient` interface) speaking Ollama's `/api/chat` NDJSON streaming protocol.
   - Default provider: **Ollama Cloud**, default model: **`gemma4:31b-cloud`**. Local mode swaps to `http://localhost:11434` and `llama3.2`.
@@ -32,4 +40,6 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ### Notes / TODO
 - Bundle icons are placeholders; run `npx @tauri-apps/cli icon <source.png>` before `tauri build` for production icons.
 - API key currently lives in `localStorage`; will move to Windows Credential Manager (via the `keyring` crate) before shipping.
-- Milestone 4: global shortcut + frameless quick-edit popup window + clipboard capture/restore for use in any Windows app.
+- Quick-edit relies on the OS giving focus back to the originating app between popup hide and `Ctrl+V`. A 90 ms sleep covers most cases; flaky in apps that delay focus restoration. UI Automation backend can replace this for problem apps later.
+- Code-signing the installer is still TODO (Azure Trusted Signing recommended).
+- Milestone 5 (proposed): tray icon + autostart + single-instance lock + auto-update.
