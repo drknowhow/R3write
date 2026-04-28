@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "R3write",
         "width": 1100,
         "height": 750,

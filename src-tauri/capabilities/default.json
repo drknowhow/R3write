@@ -1,0 +1,18 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities granted to the main R3write window.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://ollama.com/*" },
+        { "url": "https://*.ollama.com/*" },
+        { "url": "http://localhost:11434/*" },
+        { "url": "http://127.0.0.1:11434/*" }
+      ]
+    }
+  ]
+}

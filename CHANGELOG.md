@@ -7,6 +7,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ## [Unreleased]
 
 ### Added
+- **Milestone 3 — Ollama integration (cloud + local).**
+  - Replaced `MockLLM` with `OllamaClient` (same `LLMClient` interface) speaking Ollama's `/api/chat` NDJSON streaming protocol.
+  - Default provider: **Ollama Cloud**, default model: **`gemma4:31b-cloud`**. Local mode swaps to `http://localhost:11434` and `llama3.2`.
+  - Per-action prompt templates centralised in `actionInstruction()`; system prompt enforces "rewritten text only, no preamble".
+  - HTTP traffic routed through `tauri-plugin-http` (Rust) so CORS does not apply to either local Ollama or Ollama Cloud.
+  - Capability file `src-tauri/capabilities/default.json` allowlists only `ollama.com`, `*.ollama.com`, and `localhost:11434` / `127.0.0.1:11434` for `http:default`.
+  - Settings modal: provider toggle, base URL, model name, API key (cloud only). Persisted to `localStorage` under `r3write.settings.v1`. Selecting a provider auto-fills its default base URL + model.
+  - Bubble error state now renders the upstream error message from Ollama.
 - **Milestone 2 — Tiptap BubbleMenu + mock LLM rewrite flow.**
   - Selection-driven `BubbleMenu` with primary actions (Improve, Fix grammar, Shorten, Expand), a Tone submenu (Professional / Casual / Friendly / Confident), and a Custom prompt input.
   - State machine inside the bubble: `idle` → `streaming` → `ready` (or `error`), with Accept / Reject / Regenerate / Cancel.
@@ -23,5 +31,5 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ### Notes / TODO
 - Bundle icons are placeholders; run `npx @tauri-apps/cli icon <source.png>` before `tauri build` for production icons.
-- Milestone 3: replace `MockLLM` with an Ollama-backed client (local + cloud) behind the same `LLMClient` interface. Settings UI (provider, base URL, model, API key) lands with it.
+- API key currently lives in `localStorage`; will move to Windows Credential Manager (via the `keyring` crate) before shipping.
 - Milestone 4: global shortcut + frameless quick-edit popup window + clipboard capture/restore for use in any Windows app.
