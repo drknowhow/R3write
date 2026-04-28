@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #fafafa;
+  color: #18181b;
+}
+
+.tiptap {
+  outline: none;
+  min-height: 100%;
+}
+
+.tiptap p { margin: 0 0 0.75rem 0; }
+.tiptap h1 { font-size: 1.875rem; font-weight: 700; margin: 1rem 0 0.5rem; }
+.tiptap h2 { font-size: 1.5rem; font-weight: 600; margin: 1rem 0 0.5rem; }
+.tiptap h3 { font-size: 1.25rem; font-weight: 600; margin: 1rem 0 0.5rem; }
+.tiptap ul, .tiptap ol { padding-left: 1.5rem; margin: 0 0 0.75rem 0; }
+.tiptap blockquote { border-left: 3px solid #d4d4d8; padding-left: 0.75rem; color: #52525b; }
+.tiptap code { background: #f4f4f5; padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.9em; }
