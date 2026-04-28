@@ -7,6 +7,7 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ## [Unreleased]
 
 ### Added
+- **README.md** — top-level docs covering features, stack, prerequisites, run/build steps, settings, layout, and known limitations.
 - **Milestone 4 — Global shortcut + system-wide quick-edit popup.**
   - New frameless `quick-edit` window (always-on-top, no taskbar icon, hidden until invoked) declared in `tauri.conf.json`.
   - Global shortcut **Ctrl+Alt+G** registered via `tauri-plugin-global-shortcut`.
