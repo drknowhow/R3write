@@ -9,13 +9,22 @@ Local-first inline AI rewrite for Windows. Select text anywhere, press
 
 ## What it does
 
-- **In the bundled editor** — select text → BubbleMenu offers Improve,
-  Fix grammar, Shorten, Expand, change Tone, or a custom prompt.
-  Streaming preview, Accept / Reject / Regenerate.
-- **System-wide quick edit** — `Ctrl+Alt+G` over any selection in any
-  Windows app pops a small frameless menu at the cursor with the same
-  actions. Accept pastes the rewrite into the originating app; the
+- **System-wide quick edit (primary flow)** — select text in any
+  Windows app, press `Ctrl+Alt+G`. A small frameless popup appears at
+  the cursor with Improve / Fix grammar / Shorten / Expand / Tone /
+  Custom-prompt actions. Streaming preview, Accept / Reject /
+  Regenerate. Accept pastes the rewrite into the originating app; the
   original clipboard is preserved.
+  - The popup is draggable from its header.
+  - History of accepted rewrites is kept across sessions in
+    `localStorage` and viewable from the main window.
+- **Tray icon** — R3write lives in the system tray. Closing the main
+  window hides it to the tray (the app keeps running so the global
+  shortcut still fires). Right-click the tray for **Show R3write /
+  Quick edit / Quit**; left-click reopens the main window.
+- **Bundled scratch editor** — the main window has a Tiptap editor as a
+  notes / scratch pad. The in-editor selection bubble was removed in
+  favor of the system-wide flow (which works inside the editor too).
 
 Default model is `gemma4:31b-cloud` via Ollama Cloud. Switch to a local
 Ollama instance from Settings.
@@ -56,8 +65,8 @@ The first launch:
 3. Paste your API key (cloud only) and confirm the model name.
 4. Save.
 
-Then select text — either in the bundled editor or any other app
-(`Ctrl+Alt+G`) — and pick an action.
+Then select text in any app and press `Ctrl+Alt+G` to open the
+rewrite popup.
 
 ## Build a release installer
 
@@ -102,7 +111,7 @@ R3write/
 ├── vite.config.ts
 ├── index.html
 ├── src/
-│   ├── main.tsx        # entry, App, BubbleMenu, OllamaClient, QuickEdit
+│   ├── main.tsx        # entry, App, OllamaClient, QuickEdit, history
 │   └── index.css       # Tailwind import + editor styles
 └── src-tauri/
     ├── Cargo.toml
@@ -125,8 +134,11 @@ Conventions:
 - Quick-edit relies on the OS handing focus back to the previous app in
   ~90 ms after the popup hides. Most apps cope; some Electron apps with
   custom focus handling may not.
-- No tray, autostart, single-instance lock, or auto-updater yet.
+- No autostart, single-instance lock, or auto-updater yet.
 - App icon and installer branding are placeholders.
+- History `Revert` only works for entries that originated in the
+  bundled editor. Popup-originated rewrites in external apps are
+  recorded for reference but rely on the host app's own undo.
 
 ## License
 

@@ -7,3 +7,8 @@ src-tauri/gen/
 *.log
 .vscode/
 .idea/
+
+# Local AI tooling state — not portable across machines
+.c3/
+.claude/
+.mcp.json

@@ -1,14 +1,15 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
-import { BubbleMenu, EditorContent, useEditor } from "@tiptap/react";
+import { EditorContent, useEditor } from "@tiptap/react";
 import type { Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { diffWordsWithSpace, type Change } from "diff";
 import type { Node as PMNode } from "@tiptap/pm/model";
+import "tippy.js/dist/tippy.css";
 import "./index.css";
 
 // ---------- Action catalog ----------
@@ -183,108 +184,27 @@ function App() {
 
   const [settings, setSettings] = useState<OllamaSettings>(() => loadSettings());
   const [showSettings, setShowSettings] = useState(false);
-  const clientRef = useRef<OllamaClient>(new OllamaClient(settings));
   useEffect(() => {
-    clientRef.current = new OllamaClient(settings);
     saveSettings(settings);
   }, [settings]);
 
-  const [phase, setPhase] = useState<Phase>("idle");
-  const [streamed, setStreamed] = useState("");
-  const [originalText, setOriginalText] = useState("");
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [pendingAction, setPendingAction] = useState<ActionId | null>(null);
-  const [pendingPrompt, setPendingPrompt] = useState<string>("");
-  const [showTone, setShowTone] = useState(false);
-  const [showCustom, setShowCustom] = useState(false);
-  const [customDraft, setCustomDraft] = useState("");
-  const [diffMode, setDiffMode] = useState(true);
-
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
+  useEffect(() => {
+    saveHistory(history);
+  }, [history]);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<HistoryEntry>("history:add", (event) => {
+      setHistory((h) => [event.payload, ...h].slice(0, 20));
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
   const [showHistory, setShowHistory] = useState(false);
   const [revertError, setRevertError] = useState<string | null>(null);
-
-  const abortRef = useRef<AbortController | null>(null);
-  const selectionRef = useRef<{ from: number; to: number } | null>(null);
-
-  const resetBubble = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    selectionRef.current = null;
-    setPhase("idle");
-    setStreamed("");
-    setOriginalText("");
-    setErrorMsg(null);
-    setPendingAction(null);
-    setPendingPrompt("");
-    setShowTone(false);
-    setShowCustom(false);
-    setCustomDraft("");
-  }, []);
-
-  const runAction = useCallback(
-    async (action: ActionId, customPromptOverride?: string) => {
-      if (!editor) return;
-      const { from, to, empty } = editor.state.selection;
-      if (empty && !selectionRef.current) return;
-      const range = selectionRef.current ?? { from, to };
-      selectionRef.current = range;
-      const input = editor.state.doc.textBetween(range.from, range.to, " ");
-
-      abortRef.current?.abort();
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
-
-      setPendingAction(action);
-      setPendingPrompt(customPromptOverride ?? "");
-      setOriginalText(input);
-      setPhase("streaming");
-      setStreamed("");
-      setErrorMsg(null);
-
-      try {
-        let acc = "";
-        for await (const chunk of clientRef.current.rewrite(input, action, {
-          signal: ctrl.signal,
-          customPrompt: customPromptOverride,
-        })) {
-          if (ctrl.signal.aborted) return;
-          acc += chunk;
-          setStreamed(acc);
-        }
-        if (!ctrl.signal.aborted) setPhase("ready");
-      } catch (e) {
-        if (ctrl.signal.aborted) return;
-        setErrorMsg(e instanceof Error ? e.message : String(e));
-        setPhase("error");
-      }
-    },
-    [editor],
-  );
-
-  const accept = useCallback(() => {
-    if (!editor || !selectionRef.current || !pendingAction) return;
-    const { from, to } = selectionRef.current;
-    editor
-      .chain()
-      .focus()
-      .setTextSelection({ from, to })
-      .insertContent(streamed)
-      .run();
-    setHistory((h) =>
-      [
-        {
-          id: cryptoId(),
-          timestamp: Date.now(),
-          action: pendingAction,
-          original: originalText,
-          rewrite: streamed,
-        },
-        ...h,
-      ].slice(0, 20),
-    );
-    resetBubble();
-  }, [editor, streamed, originalText, pendingAction, resetBubble]);
 
   const revert = useCallback(
     (entry: HistoryEntry) => {
@@ -307,10 +227,6 @@ function App() {
     },
     [editor],
   );
-
-  const regenerate = useCallback(() => {
-    if (pendingAction) void runAction(pendingAction, pendingPrompt);
-  }, [pendingAction, pendingPrompt, runAction]);
 
   if (!editor) return null;
 
@@ -365,184 +281,12 @@ function App() {
       )}
       <main className="mx-auto w-full max-w-3xl flex-1 overflow-y-auto px-6 py-8">
         <EditorContent editor={editor} className="tiptap" />
-        <BubbleMenu
-          editor={editor}
-          tippyOptions={{
-            placement: "top",
-            maxWidth: 520,
-            interactive: true,
-            appendTo: () => document.body,
-          }}
-          shouldShow={({ editor: e }) => {
-            if (phase !== "idle") return true;
-            const { from, to } = e.state.selection;
-            return from !== to;
-          }}
-        >
-          <BubbleContent
-            phase={phase}
-            streamed={streamed}
-            originalText={originalText}
-            diffMode={diffMode}
-            onToggleDiffMode={() => setDiffMode((v) => !v)}
-            errorMsg={errorMsg}
-            showTone={showTone}
-            showCustom={showCustom}
-            customDraft={customDraft}
-            onToggleTone={() => {
-              setShowTone((v) => !v);
-              setShowCustom(false);
-            }}
-            onToggleCustom={() => {
-              setShowCustom((v) => !v);
-              setShowTone(false);
-            }}
-            onChangeCustom={setCustomDraft}
-            onAction={(id) => {
-              const { from, to } = editor.state.selection;
-              selectionRef.current = { from, to };
-              if (id === "custom") {
-                if (!customDraft.trim()) return;
-                void runAction("custom", customDraft.trim());
-              } else {
-                void runAction(id);
-              }
-            }}
-            onCancel={resetBubble}
-            onAccept={accept}
-            onRegenerate={regenerate}
-          />
-        </BubbleMenu>
       </main>
     </div>
   );
 }
 
 // ---------- Bubble UI ----------
-
-interface BubbleProps {
-  phase: Phase;
-  streamed: string;
-  originalText: string;
-  diffMode: boolean;
-  onToggleDiffMode: () => void;
-  errorMsg: string | null;
-  showTone: boolean;
-  showCustom: boolean;
-  customDraft: string;
-  onToggleTone: () => void;
-  onToggleCustom: () => void;
-  onChangeCustom: (v: string) => void;
-  onAction: (id: ActionId) => void;
-  onCancel: () => void;
-  onAccept: () => void;
-  onRegenerate: () => void;
-}
-
-function BubbleContent(p: BubbleProps) {
-  if (p.phase === "idle") {
-    return (
-      <div className="flex flex-col gap-2 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg">
-        <div className="flex flex-wrap gap-1">
-          {PRIMARY_ACTIONS.map((a) => (
-            <BubbleButton key={a.id} onClick={() => p.onAction(a.id)}>
-              {a.label}
-            </BubbleButton>
-          ))}
-          <BubbleButton onClick={p.onToggleTone} active={p.showTone}>
-            Tone ▾
-          </BubbleButton>
-          <BubbleButton onClick={p.onToggleCustom} active={p.showCustom}>
-            Custom…
-          </BubbleButton>
-        </div>
-        {p.showTone && (
-          <div className="flex flex-wrap gap-1 border-t border-zinc-100 pt-2">
-            {TONE_ACTIONS.map((a) => (
-              <BubbleButton key={a.id} onClick={() => p.onAction(a.id)}>
-                {a.label}
-              </BubbleButton>
-            ))}
-          </div>
-        )}
-        {p.showCustom && (
-          <div className="flex gap-1 border-t border-zinc-100 pt-2">
-            <input
-              autoFocus
-              value={p.customDraft}
-              onChange={(e) => p.onChangeCustom(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") p.onAction("custom");
-              }}
-              placeholder="Describe the rewrite…"
-              className="flex-1 rounded border border-zinc-200 px-2 py-1 text-sm outline-none focus:border-indigo-400"
-            />
-            <BubbleButton onClick={() => p.onAction("custom")}>Run</BubbleButton>
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex w-[480px] flex-col gap-2 rounded-lg border border-zinc-200 bg-white p-2 shadow-lg">
-      {p.phase === "error" ? (
-        <div className="rounded bg-red-50 p-2 text-xs text-red-700">
-          {p.errorMsg || "Rewrite failed."}
-        </div>
-      ) : p.phase === "ready" ? (
-        <>
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-400">
-              {p.diffMode ? "Diff" : "Rewrite"}
-            </span>
-            <button
-              type="button"
-              onClick={p.onToggleDiffMode}
-              className="text-[11px] text-zinc-500 hover:text-zinc-700"
-            >
-              {p.diffMode ? "Show plain" : "Show diff"}
-            </button>
-          </div>
-          <div className="max-h-48 overflow-y-auto rounded bg-zinc-50 p-2 text-sm text-zinc-800">
-            {p.diffMode ? (
-              <DiffView original={p.originalText} rewrite={p.streamed} />
-            ) : (
-              p.streamed
-            )}
-          </div>
-        </>
-      ) : (
-        <div className="max-h-40 overflow-y-auto rounded bg-zinc-50 p-2 text-sm text-zinc-800">
-          {p.streamed || <span className="text-zinc-400">Thinking…</span>}
-          {p.phase === "streaming" && (
-            <span className="ml-0.5 animate-pulse text-indigo-500">▍</span>
-          )}
-        </div>
-      )}
-      <div className="flex justify-end gap-1">
-        {p.phase === "streaming" && <BubbleButton onClick={p.onCancel}>Cancel</BubbleButton>}
-        {p.phase === "ready" && (
-          <>
-            <BubbleButton onClick={p.onCancel}>Reject</BubbleButton>
-            <BubbleButton onClick={p.onRegenerate}>Regenerate</BubbleButton>
-            <BubbleButton onClick={p.onAccept} primary>
-              Accept
-            </BubbleButton>
-          </>
-        )}
-        {p.phase === "error" && (
-          <>
-            <BubbleButton onClick={p.onCancel}>Dismiss</BubbleButton>
-            <BubbleButton onClick={p.onRegenerate} primary>
-              Retry
-            </BubbleButton>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
 
 // ---------- Settings ----------
 
@@ -760,9 +504,21 @@ function QuickEdit() {
     [input],
   );
 
-  const accept = useCallback(() => {
+  const accept = useCallback(async () => {
+    if (pendingAction && input.trim() && streamed.trim()) {
+      const entry: HistoryEntry = {
+        id: cryptoId(),
+        timestamp: Date.now(),
+        action: pendingAction,
+        original: input,
+        rewrite: streamed,
+      };
+      try {
+        await emit("history:add", entry);
+      } catch {}
+    }
     void invoke("accept_rewrite", { text: streamed });
-  }, [streamed]);
+  }, [streamed, pendingAction, input]);
 
   const regenerate = useCallback(() => {
     if (pendingAction) void runAction(pendingAction, pendingPrompt);
@@ -770,13 +526,20 @@ function QuickEdit() {
 
   return (
     <div className="flex h-full flex-col gap-2 rounded-lg border border-zinc-300 bg-white p-3 shadow-2xl">
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+      <div
+        data-tauri-drag-region
+        className="flex cursor-move items-center justify-between select-none"
+      >
+        <span
+          data-tauri-drag-region
+          className="text-[11px] font-medium uppercase tracking-wide text-zinc-500"
+        >
           Quick edit · {settings.model}
         </span>
         <button
           type="button"
           onClick={dismiss}
+          onMouseDown={(e) => e.stopPropagation()}
           className="text-xs text-zinc-400 hover:text-zinc-700"
           title="Esc"
         >
@@ -916,6 +679,23 @@ function DiffView({ original, rewrite }: { original: string; rewrite: string }) 
 }
 
 // ---------- History ----------
+
+const HISTORY_KEY = "r3write.history.v1";
+
+function loadHistory(): HistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    return raw ? (JSON.parse(raw) as HistoryEntry[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(entries: HistoryEntry[]) {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(entries));
+  } catch {}
+}
 
 interface HistoryEntry {
   id: string;

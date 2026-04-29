@@ -7,6 +7,24 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ## [Unreleased]
 
 ### Added
+- **Milestone 5 (in progress) — system tray + window-to-tray + draggable popup + cross-window history.**
+  - System tray icon (`tauri::tray::TrayIconBuilder`) with menu **Show R3write / Quick edit (Ctrl+Alt+G) / Quit**. Left-clicking the tray icon shows and focuses the main window.
+  - Closing the main window now hides it to the tray instead of exiting; the global shortcut and tray remain alive in the background. Use the tray's **Quit** entry to actually exit.
+  - The frameless quick-edit popup is now draggable: the header bar is a `data-tauri-drag-region`, with the close button stopping mousedown propagation so it still dismisses cleanly.
+  - Quick-edit accepts now broadcast a `history:add` Tauri event with `{ id, timestamp, action, original, rewrite }`. The main window listens and appends to history, so popup rewrites are recorded alongside in-editor ones.
+  - History persists to `localStorage` under `r3write.history.v1` (capped at 20 entries) and is restored on launch.
+
+### Changed
+- **In-editor `BubbleMenu` removed from the main editor render.** The system-wide `Ctrl+Alt+G` popup is now the only rewrite surface — it works inside the bundled editor as well as every other app, so the in-editor bubble was redundant. The dead bubble state, callbacks, and `BubbleContent` component were dropped from `App()`.
+
+### Fixed
+- **`Ctrl+Alt+G` capture no longer returns stale clipboard text.**
+  - Before triggering the synthetic `Ctrl+C`, we release any user-held modifiers (`Ctrl`, `Alt`, `Shift`, `Meta`) so Windows sees a plain `Ctrl+C` instead of `Ctrl+Alt+C` (which was a no-op on most apps and the root cause of "selection_len=0" on press).
+  - Added a clipboard sentinel: write a unique marker to the clipboard before the synthetic copy. If the marker is still there afterwards, the OS-level copy was a no-op and we treat it as "no selection" rather than feeding old clipboard contents to the LLM.
+  - Original clipboard is restored in all paths (success, no-selection, error) so the user's clipboard is never left holding the sentinel or the captured selection.
+  - Stderr logging surfaces shortcut registration outcome and `selection_len` per trigger for diagnostics.
+
+### Added
 - **Diff preview before Accept (in-editor BubbleMenu and quick-edit popup).**
   - Word-level diff (via `diff` package's `diffWordsWithSpace`) shown as the default `ready`-phase view: removals struck through in red, additions highlighted in green.
   - "Show plain / Show diff" toggle on the bubble lets you flip to the raw rewrite.
