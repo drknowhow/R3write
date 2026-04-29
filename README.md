@@ -15,7 +15,22 @@ Local-first inline AI rewrite for Windows. Select text anywhere, press
   Custom-prompt actions. Streaming preview, Accept / Reject /
   Regenerate. Accept pastes the rewrite into the originating app; the
   original clipboard is preserved.
-  - The popup is draggable from its header.
+  - **Styled rendered output** — when the rewrite is naturally
+    structured (lists, multi-paragraph prose, emphasis, headings, code),
+    the popup renders Markdown via `marked` + `DOMPurify` so you preview
+    real bullets and bold instead of `*` / `**` markers. Toggle between
+    **Rendered**, **Diff** (word-level diff vs the original, Markdown
+    stripped for readability), and **Source** (raw Markdown).
+  - **Multi-turn refinement** — after the first reply, type a follow-up
+    ("more concise", "less formal", "drop the second sentence"); the
+    full thread is sent on each turn so the model has context.
+    *Regenerate* redoes only the last turn.
+  - **Live thinking indicator** while streaming — spinner, rotating
+    phrase, animated dots, model name, elapsed timer.
+  - **Accept** strips Markdown to clean prose before pasting, so
+    external apps receive plain-text bullets/paragraphs rather than
+    `* item` / `**bold**`.
+  - The popup is draggable and resizable from its header / corner.
   - History of accepted rewrites is kept across sessions in
     `localStorage` and viewable from the main window.
 - **Tray icon** — R3write lives in the system tray. Closing the main
@@ -33,7 +48,10 @@ Ollama instance from Settings.
 
 - **Tauri 2** (Rust) — Windows-targeted desktop shell, NSIS installer.
 - **React 18 + TypeScript + Vite + Tailwind v4** — frontend.
-- **Tiptap** — rich-text editor + selection-driven BubbleMenu.
+- **Tiptap (StarterKit)** — bundled scratch editor in the main window.
+- **`marked` + `DOMPurify`** — Markdown → sanitised HTML for the
+  rendered popup output.
+- **`diff`** — inline word diff in the popup's Diff view.
 - **Ollama** — `/api/chat` streaming, routed through
   `tauri-plugin-http` so CORS does not apply.
 - **enigo** — keyboard simulation for the `Ctrl+C` / `Ctrl+V` capture

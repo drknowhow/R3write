@@ -1,14 +1,16 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { EditorContent, useEditor } from "@tiptap/react";
 import type { Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, listen } from "@tauri-apps/api/event";
+import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { diffWordsWithSpace, type Change } from "diff";
 import type { Node as PMNode } from "@tiptap/pm/model";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
 import "tippy.js/dist/tippy.css";
 import "./index.css";
 
@@ -46,13 +48,23 @@ interface RewriteOptions {
   signal?: AbortSignal;
 }
 
+interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
 interface LLMClient {
   rewrite(input: string, action: ActionId, opts?: RewriteOptions): AsyncIterable<string>;
+  chat(messages: ChatMessage[], opts?: { signal?: AbortSignal }): AsyncIterable<string>;
 }
 
 const SYSTEM_PROMPT =
   "You are an inline writing assistant. Rewrite the user's text per the instruction. " +
-  "Reply with ONLY the rewritten text — no preamble, no quotes, no explanation, no markdown fencing.";
+  "Reply with ONLY the rewritten text — no preamble, no quotes, no explanation, no surrounding code fences. " +
+  "You MAY use Markdown when the rewrite is naturally structured: bullet or numbered lists for enumerations, " +
+  "blank-line-separated paragraphs for multi-paragraph prose, **bold** / *italic* for emphasis the user asked for or " +
+  "that the source clearly carried, headings for section titles, and `inline code` for code-like fragments. " +
+  "Do NOT add structure that isn't warranted: a single sentence stays a single sentence with no formatting.";
 
 function actionInstruction(action: ActionId, customPrompt?: string): string {
   switch (action) {
@@ -72,6 +84,101 @@ function actionInstruction(action: ActionId, customPrompt?: string): string {
       }
       return "Rewrite the text.";
   }
+}
+
+// ---------- Markdown helpers ----------
+
+marked.setOptions({ breaks: true, gfm: true });
+
+function markdownToHtml(markdown: string): string {
+  const html = marked.parse(markdown, { async: false }) as string;
+  return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+}
+
+function markdownToPlain(markdown: string): string {
+  if (!markdown) return "";
+  const html = marked.parse(markdown, { async: false }) as string;
+  // Render to a detached DOM node, then collapse to text. Block elements get
+  // double-newline separation so list items and paragraphs read naturally
+  // when pasted into a plain-text target.
+  const root = document.createElement("div");
+  root.innerHTML = DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+  const blockTags = new Set([
+    "P", "DIV", "H1", "H2", "H3", "H4", "H5", "H6",
+    "UL", "OL", "LI", "BLOCKQUOTE", "PRE", "TABLE", "TR",
+  ]);
+  const out: string[] = [];
+  function walk(node: Node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      out.push(node.textContent ?? "");
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const el = node as HTMLElement;
+    const tag = el.tagName;
+    if (tag === "BR") {
+      out.push("\n");
+      return;
+    }
+    if (tag === "LI") {
+      out.push("\n");
+      el.childNodes.forEach(walk);
+      return;
+    }
+    el.childNodes.forEach(walk);
+    if (blockTags.has(tag)) out.push("\n\n");
+  }
+  root.childNodes.forEach(walk);
+  return out.join("").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function RenderedMarkdown({ markdown }: { markdown: string }) {
+  const html = useMemo(() => markdownToHtml(markdown), [markdown]);
+  return (
+    <div
+      className="prose-r3w break-words text-zinc-800"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
+function ThinkingIndicator({
+  startedAt,
+  model,
+}: {
+  startedAt: number | null;
+  model?: string;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (startedAt == null) return;
+    const id = window.setInterval(() => setNow(Date.now()), 100);
+    return () => window.clearInterval(id);
+  }, [startedAt]);
+  const elapsed = startedAt != null ? Math.max(0, (now - startedAt) / 1000) : 0;
+  const phrase =
+    elapsed < 2 ? "Thinking"
+    : elapsed < 5 ? "Generating"
+    : elapsed < 15 ? "Working on it"
+    : "Still working — large input?";
+  return (
+    <div className="flex items-center gap-2 text-zinc-500">
+      <span
+        aria-hidden
+        className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-zinc-300 border-t-indigo-500"
+      />
+      <span className="text-zinc-600">
+        {phrase}
+        <span aria-hidden className="thinking-dots ml-0.5">
+          <span>.</span>
+          <span>.</span>
+          <span>.</span>
+        </span>
+      </span>
+      {model && <span className="hidden text-zinc-400 sm:inline">· {model}</span>}
+      <span className="ml-auto tabular-nums text-zinc-400">{elapsed.toFixed(1)}s</span>
+    </div>
+  );
 }
 
 interface OllamaSettings {
@@ -113,8 +220,10 @@ function defaultsForProvider(provider: OllamaSettings["provider"]): Pick<OllamaS
 class OllamaClient implements LLMClient {
   constructor(private settings: OllamaSettings) {}
 
-  async *rewrite(input: string, action: ActionId, opts?: RewriteOptions): AsyncIterable<string> {
-    const instruction = actionInstruction(action, opts?.customPrompt);
+  async *chat(
+    messages: ChatMessage[],
+    opts?: { signal?: AbortSignal },
+  ): AsyncIterable<string> {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (this.settings.provider === "cloud" && this.settings.apiKey) {
       headers["Authorization"] = `Bearer ${this.settings.apiKey}`;
@@ -122,10 +231,7 @@ class OllamaClient implements LLMClient {
     const body = JSON.stringify({
       model: this.settings.model,
       stream: true,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: `${instruction}\n\nText:\n${input}` },
-      ],
+      messages,
     });
 
     const res = await tauriFetch(`${this.settings.baseUrl.replace(/\/$/, "")}/api/chat`, {
@@ -168,6 +274,21 @@ class OllamaClient implements LLMClient {
         }
       }
     }
+  }
+
+  async *rewrite(
+    input: string,
+    action: ActionId,
+    opts?: RewriteOptions,
+  ): AsyncIterable<string> {
+    const instruction = actionInstruction(action, opts?.customPrompt);
+    yield* this.chat(
+      [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: `${instruction}\n\nText:\n${input}` },
+      ],
+      { signal: opts?.signal },
+    );
   }
 }
 
@@ -394,20 +515,29 @@ function BubbleButton({
   onClick,
   active,
   primary,
+  disabled,
 }: {
   children: React.ReactNode;
   onClick: () => void;
   active?: boolean;
   primary?: boolean;
+  disabled?: boolean;
 }) {
   const base = "rounded px-2 py-1 text-xs font-medium transition";
-  const tone = primary
-    ? "bg-indigo-600 text-white hover:bg-indigo-700"
-    : active
-      ? "bg-zinc-200 text-zinc-900"
-      : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200";
+  const tone = disabled
+    ? "bg-zinc-100 text-zinc-400 cursor-not-allowed"
+    : primary
+      ? "bg-indigo-600 text-white hover:bg-indigo-700"
+      : active
+        ? "bg-zinc-200 text-zinc-900"
+        : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200";
   return (
-    <button type="button" onClick={onClick} className={`${base} ${tone}`}>
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`${base} ${tone}`}
+    >
       {children}
     </button>
   );
@@ -420,6 +550,12 @@ function BubbleButton({
 // "captured-text" event, runs an action through the same OllamaClient, and
 // asks Rust to paste the rewrite back into the originating app.
 
+interface Turn {
+  user: string;
+  assistant: string;
+  userLabel: string;
+}
+
 function QuickEdit() {
   const [settings, setSettings] = useState<OllamaSettings>(() => loadSettings());
   const clientRef = useRef<OllamaClient>(new OllamaClient(settings));
@@ -428,30 +564,40 @@ function QuickEdit() {
   }, [settings]);
 
   const [input, setInput] = useState<string>("");
+  const [thread, setThread] = useState<Turn[]>([]);
   const [phase, setPhase] = useState<Phase>("idle");
-  const [streamed, setStreamed] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [pendingAction, setPendingAction] = useState<ActionId | null>(null);
-  const [pendingPrompt, setPendingPrompt] = useState("");
+  const [firstAction, setFirstAction] = useState<ActionId | null>(null);
   const [showTone, setShowTone] = useState(false);
   const [showCustom, setShowCustom] = useState(false);
   const [customDraft, setCustomDraft] = useState("");
-  const [diffMode, setDiffMode] = useState(true);
+  const [followUp, setFollowUp] = useState("");
+  const [viewMode, setViewMode] = useState<"rendered" | "plain" | "diff">("rendered");
+  const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const threadScrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (threadScrollRef.current) {
+      threadScrollRef.current.scrollTop = threadScrollRef.current.scrollHeight;
+    }
+  }, [thread]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listen<string>("captured-text", (event) => {
+      abortRef.current?.abort();
       setSettings(loadSettings());
       setInput(event.payload);
+      setThread([]);
       setPhase("idle");
-      setStreamed("");
       setErrorMsg(null);
-      setPendingAction(null);
-      setPendingPrompt("");
+      setFirstAction(null);
       setShowTone(false);
       setShowCustom(false);
       setCustomDraft("");
+      setFollowUp("");
+      setStreamStartedAt(null);
     }).then((u) => {
       unlisten = u;
     });
@@ -473,66 +619,129 @@ function QuickEdit() {
     return () => window.removeEventListener("keydown", onKey);
   }, [dismiss]);
 
-  const runAction = useCallback(
-    async (action: ActionId, customPromptOverride?: string) => {
-      if (!input.trim()) return;
-      abortRef.current?.abort();
-      const ctrl = new AbortController();
-      abortRef.current = ctrl;
-      setPendingAction(action);
-      setPendingPrompt(customPromptOverride ?? "");
-      setPhase("streaming");
-      setStreamed("");
-      setErrorMsg(null);
-      try {
-        let acc = "";
-        for await (const chunk of clientRef.current.rewrite(input, action, {
-          signal: ctrl.signal,
-          customPrompt: customPromptOverride,
-        })) {
-          if (ctrl.signal.aborted) return;
-          acc += chunk;
-          setStreamed(acc);
-        }
-        if (!ctrl.signal.aborted) setPhase("ready");
-      } catch (e) {
+  const streamInto = useCallback(async (next: Turn[]) => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    setPhase("streaming");
+    setStreamStartedAt(Date.now());
+    setErrorMsg(null);
+    setThread(next);
+
+    const messages: ChatMessage[] = [{ role: "system", content: SYSTEM_PROMPT }];
+    for (const t of next) {
+      messages.push({ role: "user", content: t.user });
+      if (t.assistant) messages.push({ role: "assistant", content: t.assistant });
+    }
+
+    try {
+      let acc = "";
+      for await (const chunk of clientRef.current.chat(messages, { signal: ctrl.signal })) {
         if (ctrl.signal.aborted) return;
-        setErrorMsg(e instanceof Error ? e.message : String(e));
-        setPhase("error");
+        acc += chunk;
+        setThread((tt) => {
+          const copy = [...tt];
+          copy[copy.length - 1] = { ...copy[copy.length - 1], assistant: acc };
+          return copy;
+        });
       }
+      if (!ctrl.signal.aborted) {
+        setPhase("ready");
+        setStreamStartedAt(null);
+      }
+    } catch (e) {
+      if (ctrl.signal.aborted) return;
+      setErrorMsg(e instanceof Error ? e.message : String(e));
+      setPhase("error");
+      setStreamStartedAt(null);
+    }
+  }, []);
+
+  const runAction = useCallback(
+    (action: ActionId, customPromptOverride?: string) => {
+      if (!input.trim()) return;
+      const instruction = actionInstruction(action, customPromptOverride);
+      const userLabel =
+        action === "custom" ? customPromptOverride || "Custom" : actionLabel(action);
+      setFirstAction(action);
+      setShowTone(false);
+      setShowCustom(false);
+      setCustomDraft("");
+      void streamInto([
+        { user: `${instruction}\n\nText:\n${input}`, assistant: "", userLabel },
+      ]);
     },
-    [input],
+    [input, streamInto],
   );
 
-  const accept = useCallback(async () => {
-    if (pendingAction && input.trim() && streamed.trim()) {
-      const entry: HistoryEntry = {
-        id: cryptoId(),
-        timestamp: Date.now(),
-        action: pendingAction,
-        original: input,
-        rewrite: streamed,
-      };
-      try {
-        await emit("history:add", entry);
-      } catch {}
-    }
-    void invoke("accept_rewrite", { text: streamed });
-  }, [streamed, pendingAction, input]);
+  const sendFollowUp = useCallback(
+    (user: string, userLabel: string) => {
+      if (thread.length === 0 || phase === "streaming") return;
+      void streamInto([...thread, { user, assistant: "", userLabel }]);
+    },
+    [thread, phase, streamInto],
+  );
+
+  const submitFollowUp = useCallback(() => {
+    const text = followUp.trim();
+    if (!text) return;
+    setFollowUp("");
+    sendFollowUp(text, text);
+  }, [followUp, sendFollowUp]);
 
   const regenerate = useCallback(() => {
-    if (pendingAction) void runAction(pendingAction, pendingPrompt);
-  }, [pendingAction, pendingPrompt, runAction]);
+    if (thread.length === 0) return;
+    const last = thread[thread.length - 1];
+    void streamInto([...thread.slice(0, -1), { ...last, assistant: "" }]);
+  }, [thread, streamInto]);
+
+  const accept = useCallback(async () => {
+    const last = thread[thread.length - 1];
+    if (!last?.assistant.trim() || !firstAction) return;
+    // Strip Markdown markers for paste-back: external apps receive clean
+    // prose, not `* item` / `**bold**`. The same stripped form is recorded
+    // in history so revert in the main editor matches what was pasted.
+    const pasteText = markdownToPlain(last.assistant) || last.assistant;
+    const entry: HistoryEntry = {
+      id: cryptoId(),
+      timestamp: Date.now(),
+      action: firstAction,
+      original: input,
+      rewrite: pasteText,
+    };
+    // Cross-window: target the main webview explicitly. `emit` is a broadcast
+    // and has been observed to silently no-op across windows in some Tauri 2
+    // builds — `emitTo("main", …)` is the explicit form. We also `emit` as a
+    // fallback so the event still reaches any future listeners.
+    try {
+      await emitTo("main", "history:add", entry);
+    } catch (e) {
+      console.error("[r3write] history emitTo(main) failed:", e);
+    }
+    try {
+      await emit("history:add", entry);
+    } catch (e) {
+      console.error("[r3write] history emit(broadcast) failed:", e);
+    }
+    void invoke("accept_rewrite", { text: pasteText });
+  }, [thread, input, firstAction]);
+
+  const lastAssistant = thread[thread.length - 1]?.assistant ?? "";
 
   return (
-    <div className="flex h-full flex-col gap-2 rounded-lg border border-zinc-300 bg-white p-3 shadow-2xl">
+    <div className="relative flex h-full flex-col gap-2 rounded-lg border border-zinc-300 bg-white p-3 shadow-2xl">
       <div
         data-tauri-drag-region
+        onMouseDown={(e) => {
+          if (e.button !== 0) return;
+          if ((e.target as HTMLElement).closest("button, input, textarea, a")) return;
+          void getCurrentWebviewWindow().startDragging();
+        }}
         className="flex cursor-move items-center justify-between select-none"
       >
         <span
           data-tauri-drag-region
-          className="text-[11px] font-medium uppercase tracking-wide text-zinc-500"
+          className="pointer-events-none text-[11px] font-medium uppercase tracking-wide text-zinc-500"
         >
           Quick edit · {settings.model}
         </span>
@@ -546,10 +755,29 @@ function QuickEdit() {
           ✕
         </button>
       </div>
+      <div
+        onMouseDown={(e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          e.stopPropagation();
+          void getCurrentWebviewWindow().startResizeDragging("SouthEast");
+        }}
+        title="Drag to resize"
+        className="absolute bottom-0 right-0 z-10 h-4 w-4 cursor-se-resize"
+        style={{
+          background:
+            "linear-gradient(135deg, transparent 0 50%, #a1a1aa 50% 60%, transparent 60% 70%, #a1a1aa 70% 80%, transparent 80%)",
+        }}
+      />
       <div className="max-h-16 overflow-y-auto rounded bg-zinc-50 px-2 py-1 text-xs text-zinc-600">
-        {input || <span className="italic text-zinc-400">Select text in any app, then press Ctrl+Alt+G.</span>}
+        {input || (
+          <span className="italic text-zinc-400">
+            Select text in any app, then press Ctrl+Alt+G.
+          </span>
+        )}
       </div>
-      {phase === "idle" ? (
+
+      {thread.length === 0 ? (
         <div className="flex flex-col gap-2">
           <div className="flex flex-wrap gap-1">
             {PRIMARY_ACTIONS.map((a) => (
@@ -557,10 +785,22 @@ function QuickEdit() {
                 {a.label}
               </BubbleButton>
             ))}
-            <BubbleButton onClick={() => { setShowTone((v) => !v); setShowCustom(false); }} active={showTone}>
+            <BubbleButton
+              onClick={() => {
+                setShowTone((v) => !v);
+                setShowCustom(false);
+              }}
+              active={showTone}
+            >
               Tone ▾
             </BubbleButton>
-            <BubbleButton onClick={() => { setShowCustom((v) => !v); setShowTone(false); }} active={showCustom}>
+            <BubbleButton
+              onClick={() => {
+                setShowCustom((v) => !v);
+                setShowTone(false);
+              }}
+              active={showCustom}
+            >
               Custom…
             </BubbleButton>
           </div>
@@ -580,7 +820,9 @@ function QuickEdit() {
                 value={customDraft}
                 onChange={(e) => setCustomDraft(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && customDraft.trim()) runAction("custom", customDraft.trim());
+                  if (e.key === "Enter" && customDraft.trim()) {
+                    runAction("custom", customDraft.trim());
+                  }
                 }}
                 placeholder="Describe the rewrite…"
                 className="flex-1 rounded border border-zinc-200 px-2 py-1 text-sm outline-none focus:border-indigo-400"
@@ -595,43 +837,114 @@ function QuickEdit() {
         </div>
       ) : (
         <>
-          {phase === "error" ? (
+          <div className="flex items-center justify-between text-[10px]">
+            <span className="font-medium uppercase tracking-wide text-zinc-400">
+              {viewMode === "rendered"
+                ? "Latest reply (rendered)"
+                : viewMode === "plain"
+                ? "Latest reply (markdown source)"
+                : "Latest reply as diff vs original"}
+            </span>
+            <div className="flex gap-1 text-zinc-500">
+              {(["rendered", "diff", "plain"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setViewMode(m)}
+                  className={
+                    viewMode === m
+                      ? "rounded bg-zinc-200 px-1.5 py-0.5 text-zinc-800"
+                      : "rounded px-1.5 py-0.5 hover:bg-zinc-100 hover:text-zinc-700"
+                  }
+                >
+                  {m === "rendered" ? "Rendered" : m === "diff" ? "Diff" : "Source"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div
+            ref={threadScrollRef}
+            className="flex-1 min-h-32 overflow-y-auto rounded bg-zinc-50 p-2 text-sm"
+          >
+            {thread.map((turn, i) => {
+              const isLast = i === thread.length - 1;
+              const isStreaming = isLast && phase === "streaming";
+              const isLatestWithText = isLast && !!turn.assistant;
+              return (
+                <div key={i} className={i > 0 ? "mt-3 border-t border-zinc-200 pt-2" : ""}>
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-indigo-600">
+                    ▶ {turn.userLabel}
+                  </div>
+                  <div className="mt-1 break-words text-zinc-800">
+                    {!turn.assistant ? (
+                      isStreaming ? (
+                        <ThinkingIndicator
+                          startedAt={streamStartedAt}
+                          model={settings.model}
+                        />
+                      ) : (
+                        <span className="text-zinc-400">(no response)</span>
+                      )
+                    ) : isLatestWithText && viewMode === "diff" ? (
+                      <DiffView original={input} rewrite={turn.assistant} />
+                    ) : isLatestWithText && viewMode === "plain" ? (
+                      <pre className="whitespace-pre-wrap font-mono text-xs text-zinc-700">
+                        {turn.assistant}
+                      </pre>
+                    ) : (
+                      <RenderedMarkdown markdown={turn.assistant} />
+                    )}
+                    {isStreaming && turn.assistant && (
+                      <span className="ml-0.5 animate-pulse text-indigo-500">▍</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {phase === "error" && (
             <div className="rounded bg-red-50 p-2 text-xs text-red-700">
               {errorMsg || "Rewrite failed."}
             </div>
-          ) : phase === "ready" ? (
-            <>
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-medium uppercase tracking-wide text-zinc-400">
-                  {diffMode ? "Diff" : "Rewrite"}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setDiffMode((v) => !v)}
-                  className="text-[11px] text-zinc-500 hover:text-zinc-700"
-                >
-                  {diffMode ? "Show plain" : "Show diff"}
-                </button>
+          )}
+
+          {phase !== "streaming" && (
+            <div className="flex flex-col gap-1">
+              <div className="flex flex-wrap gap-1">
+                {TONE_ACTIONS.map((a) => (
+                  <BubbleButton
+                    key={a.id}
+                    onClick={() =>
+                      sendFollowUp(actionInstruction(a.id), `Tone: ${a.id.slice(5)}`)
+                    }
+                  >
+                    {a.label}
+                  </BubbleButton>
+                ))}
               </div>
-              <div className="max-h-40 flex-1 overflow-y-auto rounded bg-zinc-50 p-2 text-sm text-zinc-800">
-                {diffMode ? <DiffView original={input} rewrite={streamed} /> : streamed}
+              <div className="flex gap-1">
+                <input
+                  value={followUp}
+                  onChange={(e) => setFollowUp(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") submitFollowUp();
+                  }}
+                  placeholder="Follow up… (e.g. more concise, more formal)"
+                  className="flex-1 rounded border border-zinc-200 px-2 py-1 text-sm outline-none focus:border-indigo-400"
+                />
+                <BubbleButton onClick={submitFollowUp}>Send</BubbleButton>
               </div>
-            </>
-          ) : (
-            <div className="max-h-32 flex-1 overflow-y-auto rounded bg-zinc-50 p-2 text-sm text-zinc-800">
-              {streamed || <span className="text-zinc-400">Thinking…</span>}
-              {phase === "streaming" && (
-                <span className="ml-0.5 animate-pulse text-indigo-500">▍</span>
-              )}
             </div>
           )}
+
           <div className="flex justify-end gap-1">
             {phase === "streaming" && <BubbleButton onClick={dismiss}>Cancel</BubbleButton>}
             {phase === "ready" && (
               <>
                 <BubbleButton onClick={dismiss}>Reject</BubbleButton>
                 <BubbleButton onClick={regenerate}>Regenerate</BubbleButton>
-                <BubbleButton onClick={accept} primary>
+                <BubbleButton onClick={accept} primary disabled={!lastAssistant.trim()}>
                   Accept &amp; paste
                 </BubbleButton>
               </>
@@ -654,7 +967,11 @@ function QuickEdit() {
 // ---------- Diff view ----------
 
 function DiffView({ original, rewrite }: { original: string; rewrite: string }) {
-  const parts: Change[] = diffWordsWithSpace(original, rewrite);
+  // Strip Markdown from the rewrite first so the inline word diff doesn't
+  // light up `**`, `*`, `#`, list bullets etc. as additions against a plain
+  // original. The original is captured via clipboard text, so it's plain.
+  const rewritePlain = useMemo(() => markdownToPlain(rewrite) || rewrite, [rewrite]);
+  const parts: Change[] = diffWordsWithSpace(original, rewritePlain);
   return (
     <div className="whitespace-pre-wrap break-words leading-relaxed">
       {parts.map((p, i) => {

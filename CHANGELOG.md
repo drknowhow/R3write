@@ -7,6 +7,26 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ## [Unreleased]
 
 ### Added
+- **Styled rendered output in the quick-edit popup.**
+  - The LLM is now allowed (and prompted) to use Markdown when the rewrite is naturally structured: blank-line-separated paragraphs, bullet/numbered lists, `**bold**` / `*italic*` emphasis, headings, blockquotes, and `inline code`. Single-sentence inputs stay unformatted.
+  - The popup renders the reply via `marked` → `DOMPurify` (XSS-sanitised) and styles it with the existing `.tiptap` prose rules extended to a shared `.prose-r3w` class, so the popup matches the bundled editor visually.
+  - Reply view is now a three-state toggle — **Rendered** (default), **Diff**, **Source** (raw Markdown).
+  - **Diff** view strips Markdown from the rewrite before doing the inline word diff, so `**` / `*` / `#` markers no longer light up as additions against a plain-text original.
+  - **Accept & paste** strips Markdown to clean prose before writing to the clipboard, so external paste-back is `item` / `bold` rather than `* item` / `**bold**`. The same stripped form is recorded in history.
+  - New deps: `marked`, `dompurify`, `@types/dompurify`.
+- **Richer "thinking" indicator while streaming.** Replaces the bare `Thinking…` text with a spinner, a phrase that rotates with elapsed time (`Thinking → Generating → Working on it → Still working — large input?`), animated dots, the active model name, and a live tenths-of-a-second elapsed timer. Disappears the moment the first token arrives; the existing `▍` caret then takes over for in-stream feedback.
+
+### Fixed
+- **Cross-window history broadcast.** The popup now emits `history:add` with `emitTo("main", …)` (explicit cross-window target) plus a `emit(…)` fallback, and surfaces failures via `console.error` instead of swallowing them. Accepted popup rewrites now reliably show up in the main window's History panel.
+
+- **Multi-turn refinement in the quick-edit popup.**
+  - The popup now shows a thread of turns: the initial action (Improve / Tone / Custom / etc.) and any follow-ups the user types.
+  - After the first response is `ready`, a "Follow up…" input appears under the thread. Press Enter (or click Send) to send a refinement — e.g. "more concise", "less formal", "drop the second sentence". The full conversation is sent to Ollama on each turn so the model has context.
+  - **Regenerate** redoes only the last turn; **Accept** pastes the latest assistant reply into the originating app; **Reject / Cancel / Esc** dismisses the whole thread.
+  - The thread resets each time the popup is re-invoked with `Ctrl+Alt+G`.
+  - History records the original selection, the FIRST action, and the FINAL accepted reply (intermediate turns are not persisted).
+  - Quick-edit window grew to **520×520** with `minWidth: 420`, `minHeight: 360`, and `resizable: true` so the thread has room.
+  - `OllamaClient` gained a `chat(messages, opts)` primitive; the existing `rewrite()` is now a thin wrapper that builds the initial messages array and delegates to `chat()`.
 - **Milestone 5 (in progress) — system tray + window-to-tray + draggable popup + cross-window history.**
   - System tray icon (`tauri::tray::TrayIconBuilder`) with menu **Show R3write / Quick edit (Ctrl+Alt+G) / Quit**. Left-clicking the tray icon shows and focuses the main window.
   - Closing the main window now hides it to the tray instead of exiting; the global shortcut and tray remain alive in the background. Use the tray's **Quit** entry to actually exit.
