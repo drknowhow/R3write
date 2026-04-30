@@ -1386,14 +1386,26 @@ function QuickEdit() {
         else runAction(a);
         return;
       }
-      if (phase === "ready" && e.key === "Enter") {
+      if (phase === "ready") {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void accept();
+          return;
+        }
+        if (e.key === "r" || e.key === "R") {
+          e.preventDefault();
+          regenerate();
+          return;
+        }
+      }
+      if (phase === "error" && (e.key === "r" || e.key === "R" || e.key === "Enter")) {
         e.preventDefault();
-        void accept();
+        regenerate();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dismiss, thread.length, phase, runAction, accept]);
+  }, [dismiss, thread.length, phase, runAction, accept, regenerate]);
 
   const lastAssistant = thread[thread.length - 1]?.assistant ?? "";
   const parsedLast = useMemo(() => parseFeedback(lastAssistant), [lastAssistant]);
@@ -1719,8 +1731,12 @@ function QuickEdit() {
                   )}
                   {phase === "ready" && (
                     <>
-                      <Chip onClick={dismiss}>Reject</Chip>
-                      <Chip onClick={regenerate}>Regenerate</Chip>
+                      <Chip onClick={dismiss} shortcut="Esc">
+                        Reject
+                      </Chip>
+                      <Chip onClick={regenerate} shortcut="R">
+                        Regenerate
+                      </Chip>
                       <Chip
                         onClick={accept}
                         primary
@@ -1733,8 +1749,10 @@ function QuickEdit() {
                   )}
                   {phase === "error" && (
                     <>
-                      <Chip onClick={dismiss}>Dismiss</Chip>
-                      <Chip onClick={regenerate} primary>
+                      <Chip onClick={dismiss} shortcut="Esc">
+                        Dismiss
+                      </Chip>
+                      <Chip onClick={regenerate} primary shortcut="R">
                         Retry
                       </Chip>
                     </>
