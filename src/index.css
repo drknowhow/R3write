@@ -1,19 +1,92 @@
 @import "tailwindcss";
 
+:root {
+  --bg: #fafafa;
+  --bg-elev: #ffffff;
+  --bg-subtle: #f4f4f5;
+  --fg: #18181b;
+  --fg-muted: #71717a;
+  --fg-subtle: #a1a1aa;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --accent: #6366f1;
+  --accent-fg: #ffffff;
+  --accent-hover: #4f46e5;
+  --danger: #dc2626;
+  --danger-bg: #fef2f2;
+  --r3w-add: #dcfce7;
+  --r3w-add-fg: #166534;
+  --r3w-del: #fee2e2;
+  --r3w-del-fg: #b91c1c;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.04);
+  --shadow-md: 0 8px 24px -8px rgb(0 0 0 / 0.12);
+}
+
+[data-theme="dark"] {
+  --bg: #09090b;
+  --bg-elev: #18181b;
+  --bg-subtle: #27272a;
+  --fg: #fafafa;
+  --fg-muted: #a1a1aa;
+  --fg-subtle: #71717a;
+  --border: #27272a;
+  --border-strong: #3f3f46;
+  --accent: #818cf8;
+  --accent-fg: #0b0b10;
+  --accent-hover: #a5b4fc;
+  --danger: #f87171;
+  --danger-bg: #2a1010;
+  --r3w-add: #14321f;
+  --r3w-add-fg: #86efac;
+  --r3w-del: #3a1414;
+  --r3w-del-fg: #fca5a5;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-md: 0 8px 24px -8px rgb(0 0 0 / 0.8);
+}
+
+@theme {
+  --color-bg: var(--bg);
+  --color-bg-elev: var(--bg-elev);
+  --color-bg-subtle: var(--bg-subtle);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-accent-hover: var(--accent-hover);
+  --color-danger: var(--danger);
+  --color-danger-bg: var(--danger-bg);
+  --color-r3w-add: var(--r3w-add);
+  --color-r3w-add-fg: var(--r3w-add-fg);
+  --color-r3w-del: var(--r3w-del);
+  --color-r3w-del-fg: var(--r3w-del-fg);
+}
+
 html, body, #root {
   height: 100%;
   margin: 0;
 }
 
+html {
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
 body {
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  background: #fafafa;
-  color: #18181b;
+  background: var(--bg);
+  color: var(--fg);
 }
 
 .tiptap {
   outline: none;
   min-height: 100%;
+  caret-color: var(--accent);
+}
+
+.tiptap ::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .tiptap p,
@@ -30,12 +103,12 @@ body {
 .tiptap ol, .prose-r3w ol { list-style: decimal; }
 .tiptap li, .prose-r3w li { margin: 0.15rem 0; }
 .tiptap blockquote,
-.prose-r3w blockquote { border-left: 3px solid #d4d4d8; padding-left: 0.75rem; color: #52525b; margin: 0 0 0.75rem 0; }
+.prose-r3w blockquote { border-left: 3px solid var(--border-strong); padding-left: 0.75rem; color: var(--fg-muted); margin: 0 0 0.75rem 0; }
 .tiptap code,
-.prose-r3w code { background: #f4f4f5; padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.9em; }
+.prose-r3w code { background: var(--bg-subtle); padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.9em; }
 .prose-r3w strong { font-weight: 600; }
 .prose-r3w em { font-style: italic; }
-.prose-r3w pre { background: #f4f4f5; padding: 0.5rem 0.75rem; border-radius: 6px; overflow-x: auto; margin: 0 0 0.75rem 0; }
+.prose-r3w pre { background: var(--bg-subtle); padding: 0.5rem 0.75rem; border-radius: 6px; overflow-x: auto; margin: 0 0 0.75rem 0; }
 .prose-r3w pre code { background: transparent; padding: 0; }
 .prose-r3w > :last-child { margin-bottom: 0; }
 

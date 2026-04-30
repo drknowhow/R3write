@@ -11,6 +11,26 @@ import { diffWordsWithSpace, type Change } from "diff";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import * as Dialog from "@radix-ui/react-dialog";
+import * as Tooltip from "@radix-ui/react-tooltip";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Settings as SettingsIcon,
+  Info as InfoIcon,
+  Sun,
+  Moon,
+  Monitor,
+  X,
+  Trash2,
+  Sparkles,
+  RotateCcw,
+  Loader2,
+  CheckCircle2,
+  XCircle,
+  PlugZap,
+} from "lucide-react";
+import { useTheme, type ThemeChoice } from "./theme";
 import "tippy.js/dist/tippy.css";
 import "./index.css";
 
@@ -132,54 +152,79 @@ function markdownToPlain(markdown: string): string {
   return out.join("").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-function RenderedMarkdown({ markdown }: { markdown: string }) {
+const RenderedMarkdown = React.memo(function RenderedMarkdown({
+  markdown,
+}: {
+  markdown: string;
+}) {
   const html = useMemo(() => markdownToHtml(markdown), [markdown]);
   return (
     <div
-      className="prose-r3w break-words text-zinc-800"
+      className="prose-r3w break-words text-fg"
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
+});
+
+function phraseFor(elapsedSec: number): string {
+  return elapsedSec < 2
+    ? "Thinking"
+    : elapsedSec < 5
+      ? "Generating"
+      : elapsedSec < 15
+        ? "Working on it"
+        : "Still working — large input?";
 }
 
-function ThinkingIndicator({
+const ThinkingIndicator = React.memo(function ThinkingIndicator({
   startedAt,
   model,
 }: {
   startedAt: number | null;
   model?: string;
 }) {
-  const [now, setNow] = useState(() => Date.now());
+  const phraseTextRef = useRef<HTMLSpanElement>(null);
+  const elapsedRef = useRef<HTMLSpanElement>(null);
+
   useEffect(() => {
     if (startedAt == null) return;
-    const id = window.setInterval(() => setNow(Date.now()), 100);
-    return () => window.clearInterval(id);
+    let rafId = 0;
+    let lastPhrase = "";
+    const tick = () => {
+      const elapsed = Math.max(0, (Date.now() - startedAt) / 1000);
+      if (elapsedRef.current) elapsedRef.current.textContent = elapsed.toFixed(1) + "s";
+      const next = phraseFor(elapsed);
+      if (next !== lastPhrase && phraseTextRef.current) {
+        phraseTextRef.current.textContent = next;
+        lastPhrase = next;
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
   }, [startedAt]);
-  const elapsed = startedAt != null ? Math.max(0, (now - startedAt) / 1000) : 0;
-  const phrase =
-    elapsed < 2 ? "Thinking"
-    : elapsed < 5 ? "Generating"
-    : elapsed < 15 ? "Working on it"
-    : "Still working — large input?";
+
   return (
-    <div className="flex items-center gap-2 text-zinc-500">
+    <div className="flex items-center gap-2 text-fg-muted">
       <span
         aria-hidden
-        className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-zinc-300 border-t-indigo-500"
+        className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-border-strong border-t-accent"
       />
-      <span className="text-zinc-600">
-        {phrase}
+      <span className="text-fg">
+        <span ref={phraseTextRef}>Thinking</span>
         <span aria-hidden className="thinking-dots ml-0.5">
           <span>.</span>
           <span>.</span>
           <span>.</span>
         </span>
       </span>
-      {model && <span className="hidden text-zinc-400 sm:inline">· {model}</span>}
-      <span className="ml-auto tabular-nums text-zinc-400">{elapsed.toFixed(1)}s</span>
+      {model && <span className="hidden text-fg-subtle sm:inline">· {model}</span>}
+      <span ref={elapsedRef} className="ml-auto tabular-nums text-fg-subtle">
+        0.0s
+      </span>
     </div>
   );
-}
+});
 
 interface OllamaSettings {
   provider: "cloud" | "local";
@@ -299,12 +344,12 @@ type Phase = "idle" | "streaming" | "ready" | "error";
 function App() {
   const editor = useEditor({
     extensions: [StarterKit],
-    content:
-      "<h1>R3write</h1><p>Select any text and a small toolbar will appear with AI rewrite options. Try selecting this sentence and clicking <strong>Improve</strong>.</p><p>By default this app talks to Ollama Cloud with model <code>gemma4:31b-cloud</code>. Open Settings (top right) to paste your API key, or switch to a local Ollama instance.</p>",
+    content: "",
   });
 
   const [settings, setSettings] = useState<OllamaSettings>(() => loadSettings());
   const [showSettings, setShowSettings] = useState(false);
+  const [showInfo, setShowInfo] = useState(false);
   useEffect(() => {
     saveSettings(settings);
   }, [settings]);
@@ -324,7 +369,6 @@ function App() {
       unlisten?.();
     };
   }, []);
-  const [showHistory, setShowHistory] = useState(false);
   const [revertError, setRevertError] = useState<string | null>(null);
 
   const revert = useCallback(
@@ -352,41 +396,46 @@ function App() {
   if (!editor) return null;
 
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-6 py-3">
-        <h1 className="text-sm font-semibold tracking-wide text-zinc-700">R3write</h1>
-        <div className="flex items-center gap-3 text-xs text-zinc-500">
-          <span>
-            {settings.provider === "cloud" ? "Ollama Cloud" : "Local Ollama"} · {settings.model}
-          </span>
-          <button
-            type="button"
-            onClick={() => setShowHistory(true)}
-            className="rounded border border-zinc-200 px-2 py-1 hover:bg-zinc-50"
-          >
-            History ({history.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowSettings(true)}
-            className="rounded border border-zinc-200 px-2 py-1 hover:bg-zinc-50"
-          >
-            Settings
-          </button>
-        </div>
-      </header>
-      {showSettings && (
-        <SettingsModal
+    <Tooltip.Provider delayDuration={250} skipDelayDuration={500}>
+      <div className="flex h-full flex-col bg-bg text-fg">
+        <header className="flex h-12 items-center justify-between border-b border-border bg-bg-elev/80 px-4 backdrop-blur supports-[backdrop-filter]:bg-bg-elev/60">
+          <div className="flex items-center gap-2">
+            <span
+              aria-hidden
+              className="grid h-6 w-6 place-items-center rounded-md bg-accent text-accent-fg"
+            >
+              <Sparkles size={14} strokeWidth={2.5} />
+            </span>
+            <h1 className="text-sm font-semibold tracking-tight text-fg">R3write</h1>
+          </div>
+          <div className="flex items-center gap-2">
+            <StatusPill provider={settings.provider} model={settings.model} />
+            <ThemeToggle />
+            <IconButton
+              label="Info"
+              onClick={() => setShowInfo(true)}
+              icon={<InfoIcon size={16} />}
+            />
+            <IconButton
+              label="Settings"
+              onClick={() => setShowSettings(true)}
+              icon={<SettingsIcon size={16} />}
+            />
+          </div>
+        </header>
+
+        <InfoDialog open={showInfo} onOpenChange={setShowInfo} model={settings.model} />
+        <SettingsDialog
+          open={showSettings}
+          onOpenChange={setShowSettings}
           settings={settings}
-          onClose={() => setShowSettings(false)}
           onSave={(s) => {
             setSettings(s);
             setShowSettings(false);
           }}
         />
-      )}
-      {showHistory && (
-        <HistoryPanel
+
+        <HistoryListPanel
           entries={history}
           revertError={revertError}
           onRevert={revert}
@@ -394,16 +443,218 @@ function App() {
             setHistory([]);
             setRevertError(null);
           }}
-          onClose={() => {
-            setShowHistory(false);
-            setRevertError(null);
-          }}
         />
-      )}
-      <main className="mx-auto w-full max-w-3xl flex-1 overflow-y-auto px-6 py-8">
-        <EditorContent editor={editor} className="tiptap" />
-      </main>
-    </div>
+
+        <div className="hidden">
+          <EditorContent editor={editor} />
+        </div>
+      </div>
+    </Tooltip.Provider>
+  );
+}
+
+function InfoDialog({
+  open,
+  onOpenChange,
+  model,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  model: string;
+}) {
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal forceMount>
+        <AnimatePresence>
+          {open && (
+            <>
+              <Dialog.Overlay asChild forceMount>
+                <motion.div
+                  className="fixed inset-0 z-40 bg-black/40"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                />
+              </Dialog.Overlay>
+              <Dialog.Content asChild forceMount>
+                <motion.div
+                  className="fixed left-1/2 top-1/2 z-50 w-[460px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-elev p-6 text-fg shadow-md focus:outline-none"
+                  initial={{ opacity: 0, scale: 0.96 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.96 }}
+                  transition={{ duration: 0.12, ease: "easeOut" }}
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      aria-hidden
+                      className="grid h-7 w-7 place-items-center rounded-md bg-accent text-accent-fg"
+                    >
+                      <Sparkles size={16} strokeWidth={2.5} />
+                    </span>
+                    <Dialog.Title className="text-base font-semibold text-fg">
+                      About R3write
+                    </Dialog.Title>
+                  </div>
+                  <Dialog.Description className="sr-only">
+                    Usage instructions and current configuration for R3write.
+                  </Dialog.Description>
+
+                  <Dialog.Close asChild>
+                    <button
+                      type="button"
+                      aria-label="Close"
+                      className="absolute right-3 top-3 grid h-7 w-7 place-items-center rounded-md text-fg-muted hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    >
+                      <X size={14} />
+                    </button>
+                  </Dialog.Close>
+
+                  <div className="mt-4 space-y-3 text-sm leading-relaxed text-fg">
+                    <p>
+                      Select any text in any app, then press{" "}
+                      <kbd className="rounded border border-border bg-bg-subtle px-1.5 py-0.5 font-mono text-xs text-fg">
+                        Ctrl + Alt + G
+                      </kbd>{" "}
+                      to open the rewrite popup.
+                    </p>
+                    <p className="text-fg-muted">
+                      Pick an action — Improve, Fix grammar, Shorten, Expand, or a tone preset — and the
+                      rewrite streams in. Accept it to paste back into the source app, or dismiss to keep
+                      your original.
+                    </p>
+                    <p className="text-fg-muted">
+                      The model talks to{" "}
+                      <span className="text-fg">{model}</span>. Open Settings to switch providers or paste
+                      an Ollama Cloud API key.
+                    </p>
+                  </div>
+
+                  <div className="mt-5 flex justify-end">
+                    <Dialog.Close asChild>
+                      <button
+                        type="button"
+                        className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                      >
+                        Got it
+                      </button>
+                    </Dialog.Close>
+                  </div>
+                </motion.div>
+              </Dialog.Content>
+            </>
+          )}
+        </AnimatePresence>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function IconButton({
+  label,
+  onClick,
+  icon,
+  badge,
+}: {
+  label: string;
+  onClick: () => void;
+  icon: React.ReactNode;
+  badge?: number;
+}) {
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          aria-label={label}
+          className="relative grid h-8 w-8 place-items-center rounded-md text-fg-muted transition hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          {icon}
+          {badge !== undefined && (
+            <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-[16px] place-items-center rounded-full bg-accent px-1 text-[10px] font-semibold text-accent-fg">
+              {badge}
+            </span>
+          )}
+        </button>
+      </Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Content
+          sideOffset={6}
+          className="rounded-md border border-border bg-bg-elev px-2 py-1 text-xs text-fg shadow-md"
+        >
+          {label}
+        </Tooltip.Content>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  );
+}
+
+function StatusPill({ provider, model }: { provider: OllamaSettings["provider"]; model: string }) {
+  return (
+    <span className="hidden items-center gap-1.5 rounded-full border border-border bg-bg-elev px-2.5 py-1 text-xs text-fg-muted sm:flex">
+      <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-accent" />
+      <span className="text-fg">{model}</span>
+      <span className="text-fg-subtle">·</span>
+      <span>{provider === "cloud" ? "cloud" : "local"}</span>
+    </span>
+  );
+}
+
+function ThemeToggle() {
+  const { choice, resolved, setTheme } = useTheme();
+  const Icon = resolved === "dark" ? Moon : Sun;
+  return (
+    <DropdownMenu.Root>
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>
+          <DropdownMenu.Trigger asChild>
+            <button
+              type="button"
+              aria-label="Toggle theme"
+              className="grid h-8 w-8 place-items-center rounded-md text-fg-muted transition hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            >
+              <Icon size={16} />
+            </button>
+          </DropdownMenu.Trigger>
+        </Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Content
+            sideOffset={6}
+            className="rounded-md border border-border bg-bg-elev px-2 py-1 text-xs text-fg shadow-md"
+          >
+            Theme
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          sideOffset={6}
+          align="end"
+          className="z-50 min-w-[140px] rounded-md border border-border bg-bg-elev p-1 text-sm shadow-md"
+        >
+          {(
+            [
+              { v: "system", label: "System", icon: <Monitor size={14} /> },
+              { v: "light", label: "Light", icon: <Sun size={14} /> },
+              { v: "dark", label: "Dark", icon: <Moon size={14} /> },
+            ] as { v: ThemeChoice; label: string; icon: React.ReactNode }[]
+          ).map((item) => (
+            <DropdownMenu.Item
+              key={item.v}
+              onSelect={() => setTheme(item.v)}
+              className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-fg outline-none data-[highlighted]:bg-bg-subtle"
+            >
+              <span className="text-fg-muted">{item.icon}</span>
+              <span>{item.label}</span>
+              {choice === item.v && (
+                <span aria-hidden className="ml-auto h-1.5 w-1.5 rounded-full bg-accent" />
+              )}
+            </DropdownMenu.Item>
+          ))}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
 
@@ -411,100 +662,246 @@ function App() {
 
 // ---------- Settings ----------
 
-function SettingsModal({
+function SettingsDialog({
+  open,
+  onOpenChange,
   settings,
-  onClose,
   onSave,
 }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   settings: OllamaSettings;
-  onClose: () => void;
   onSave: (s: OllamaSettings) => void;
 }) {
   const [draft, setDraft] = useState<OllamaSettings>(settings);
-  const update = (patch: Partial<OllamaSettings>) => setDraft((d) => ({ ...d, ...patch }));
+  type TestStatus =
+    | { kind: "idle" }
+    | { kind: "testing" }
+    | { kind: "ok"; ms: number }
+    | { kind: "err"; message: string };
+  const [test, setTest] = useState<TestStatus>({ kind: "idle" });
+  const testAbortRef = useRef<AbortController | null>(null);
+
+  // Reset draft and test status when dialog re-opens with potentially newer settings.
+  useEffect(() => {
+    if (open) {
+      setDraft(settings);
+      setTest({ kind: "idle" });
+    } else {
+      testAbortRef.current?.abort();
+      testAbortRef.current = null;
+    }
+  }, [open, settings]);
+
+  // Any field change invalidates a previous result so it doesn't mislead.
+  const update = (patch: Partial<OllamaSettings>) => {
+    setDraft((d) => ({ ...d, ...patch }));
+    setTest((t) => (t.kind === "ok" || t.kind === "err" ? { kind: "idle" } : t));
+  };
+
+  const runTest = async () => {
+    testAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    testAbortRef.current = ctrl;
+    setTest({ kind: "testing" });
+    const startedAt = performance.now();
+    const timeoutId = window.setTimeout(() => ctrl.abort(), 15000);
+
+    let receivedAny = false;
+    let firstTokenAt = 0;
+    try {
+      const client = new OllamaClient(draft);
+      for await (const piece of client.chat(
+        [{ role: "user", content: "ping" }],
+        { signal: ctrl.signal },
+      )) {
+        if (piece) {
+          receivedAny = true;
+          firstTokenAt = performance.now();
+          ctrl.abort(); // first token is enough; stop streaming
+          break;
+        }
+      }
+      if (receivedAny) {
+        setTest({ kind: "ok", ms: Math.round(firstTokenAt - startedAt) });
+      } else {
+        setTest({ kind: "err", message: "No tokens received" });
+      }
+    } catch (e: unknown) {
+      if (receivedAny) {
+        // Our own post-success abort threw — still a pass.
+        setTest({ kind: "ok", ms: Math.round(firstTokenAt - startedAt) });
+      } else {
+        const aborted = e instanceof DOMException && e.name === "AbortError";
+        const msg =
+          e instanceof Error ? e.message : typeof e === "string" ? e : "Unknown error";
+        const isTimeout = aborted && performance.now() - startedAt >= 14900;
+        setTest({
+          kind: "err",
+          message: isTimeout ? "Timed out after 15s" : msg.slice(0, 200),
+        });
+      }
+    } finally {
+      window.clearTimeout(timeoutId);
+      if (testAbortRef.current === ctrl) testAbortRef.current = null;
+    }
+  };
+
+  const inputCls =
+    "w-full rounded-md border border-border bg-bg px-3 py-1.5 text-sm text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent transition";
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-      onClick={onClose}
-    >
-      <div
-        className="w-[420px] rounded-lg border border-zinc-200 bg-white p-5 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 className="mb-3 text-base font-semibold text-zinc-800">Settings</h2>
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal forceMount>
+        <AnimatePresence>
+          {open && (
+            <>
+              <Dialog.Overlay asChild forceMount>
+                <motion.div
+                  className="fixed inset-0 z-40 bg-black/40"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                />
+              </Dialog.Overlay>
+              <Dialog.Content asChild forceMount>
+                <motion.div
+                  className="fixed left-1/2 top-1/2 z-50 w-[440px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-elev p-6 text-fg shadow-md focus:outline-none"
+                  initial={{ opacity: 0, scale: 0.96 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.96 }}
+                  transition={{ duration: 0.12, ease: "easeOut" }}
+                >
+                  <Dialog.Title className="text-base font-semibold text-fg">Settings</Dialog.Title>
+                  <Dialog.Description className="mt-0.5 mb-4 text-xs text-fg-muted">
+                    Configure your model provider.
+                  </Dialog.Description>
 
-        <Field label="Provider">
-          <select
-            value={draft.provider}
-            onChange={(e) => {
-              const provider = e.target.value as OllamaSettings["provider"];
-              update({ provider, ...defaultsForProvider(provider) });
-            }}
-            className="w-full rounded border border-zinc-200 px-2 py-1 text-sm"
-          >
-            <option value="cloud">Ollama Cloud</option>
-            <option value="local">Local Ollama</option>
-          </select>
-        </Field>
+                  <Dialog.Close asChild>
+                    <button
+                      type="button"
+                      aria-label="Close"
+                      className="absolute right-3 top-3 grid h-7 w-7 place-items-center rounded-md text-fg-muted hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    >
+                      <X size={14} />
+                    </button>
+                  </Dialog.Close>
 
-        <Field label="Base URL">
-          <input
-            value={draft.baseUrl}
-            onChange={(e) => update({ baseUrl: e.target.value })}
-            className="w-full rounded border border-zinc-200 px-2 py-1 text-sm"
-          />
-        </Field>
+                  <Field label="Provider">
+                    <select
+                      value={draft.provider}
+                      onChange={(e) => {
+                        const provider = e.target.value as OllamaSettings["provider"];
+                        update({ provider, ...defaultsForProvider(provider) });
+                      }}
+                      className={inputCls}
+                    >
+                      <option value="cloud">Ollama Cloud</option>
+                      <option value="local">Local Ollama</option>
+                    </select>
+                  </Field>
 
-        <Field label="Model">
-          <input
-            value={draft.model}
-            onChange={(e) => update({ model: e.target.value })}
-            placeholder="gemma4:31b-cloud"
-            className="w-full rounded border border-zinc-200 px-2 py-1 text-sm"
-          />
-        </Field>
+                  <Field label="Base URL">
+                    <input
+                      value={draft.baseUrl}
+                      onChange={(e) => update({ baseUrl: e.target.value })}
+                      className={inputCls}
+                    />
+                  </Field>
 
-        {draft.provider === "cloud" && (
-          <Field label="API key">
-            <input
-              type="password"
-              value={draft.apiKey}
-              onChange={(e) => update({ apiKey: e.target.value })}
-              placeholder="ollama-…"
-              className="w-full rounded border border-zinc-200 px-2 py-1 text-sm"
-            />
-            <p className="mt-1 text-[11px] text-zinc-400">
-              Stored in localStorage for now; will move to Windows Credential Manager in a later milestone.
-            </p>
-          </Field>
-        )}
+                  <Field label="Model">
+                    <input
+                      value={draft.model}
+                      onChange={(e) => update({ model: e.target.value })}
+                      placeholder="gemma4:31b-cloud"
+                      className={inputCls}
+                    />
+                  </Field>
 
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded border border-zinc-200 px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => onSave(draft)}
-            className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700"
-          >
-            Save
-          </button>
-        </div>
-      </div>
-    </div>
+                  {draft.provider === "cloud" && (
+                    <Field label="API key">
+                      <input
+                        type="password"
+                        value={draft.apiKey}
+                        onChange={(e) => update({ apiKey: e.target.value })}
+                        placeholder="ollama-…"
+                        className={inputCls}
+                      />
+                      <p className="mt-1 text-[11px] text-fg-subtle">
+                        Stored in localStorage for now; will move to Windows Credential Manager in a later milestone.
+                      </p>
+                    </Field>
+                  )}
+
+                  <div className="mt-5 flex items-center justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={runTest}
+                      disabled={test.kind === "testing"}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-fg transition hover:bg-bg-subtle disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    >
+                      {test.kind === "testing" ? (
+                        <Loader2 size={14} className="animate-spin text-fg-muted" />
+                      ) : (
+                        <PlugZap size={14} className="text-fg-muted" />
+                      )}
+                      {test.kind === "testing" ? "Testing…" : "Test connection"}
+                    </button>
+                    <div className="flex items-center gap-2">
+                      <Dialog.Close asChild>
+                        <button
+                          type="button"
+                          className="rounded-md border border-border px-3 py-1.5 text-sm text-fg-muted hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                        >
+                          Cancel
+                        </button>
+                      </Dialog.Close>
+                      <button
+                        type="button"
+                        onClick={() => onSave(draft)}
+                        className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+
+                  {test.kind === "ok" && (
+                    <div
+                      role="status"
+                      className="mt-3 flex items-center gap-2 rounded-md border border-border bg-bg-subtle px-3 py-2 text-xs text-fg"
+                    >
+                      <CheckCircle2 size={14} className="text-r3w-add-fg" />
+                      <span>
+                        Connected · first token in{" "}
+                        <span className="tabular-nums">{test.ms}</span> ms
+                      </span>
+                    </div>
+                  )}
+                  {test.kind === "err" && (
+                    <div
+                      role="alert"
+                      className="mt-3 flex items-start gap-2 rounded-md border border-border bg-danger-bg px-3 py-2 text-xs text-danger"
+                    >
+                      <XCircle size={14} className="mt-0.5 flex-none" />
+                      <span className="break-words">{test.message}</span>
+                    </div>
+                  )}
+                </motion.div>
+              </Dialog.Content>
+            </>
+          )}
+        </AnimatePresence>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="mb-3 block">
-      <span className="mb-1 block text-xs font-medium text-zinc-600">{label}</span>
+      <span className="mb-1 block text-xs font-medium text-fg-muted">{label}</span>
       {children}
     </label>
   );
@@ -971,20 +1368,23 @@ function DiffView({ original, rewrite }: { original: string; rewrite: string }) 
   // light up `**`, `*`, `#`, list bullets etc. as additions against a plain
   // original. The original is captured via clipboard text, so it's plain.
   const rewritePlain = useMemo(() => markdownToPlain(rewrite) || rewrite, [rewrite]);
-  const parts: Change[] = diffWordsWithSpace(original, rewritePlain);
+  const parts: Change[] = useMemo(
+    () => diffWordsWithSpace(original, rewritePlain),
+    [original, rewritePlain],
+  );
   return (
-    <div className="whitespace-pre-wrap break-words leading-relaxed">
+    <div className="whitespace-pre-wrap break-words leading-relaxed text-fg">
       {parts.map((p, i) => {
         if (p.added) {
           return (
-            <span key={i} className="rounded bg-green-100 text-green-900">
+            <span key={i} className="rounded bg-r3w-add px-0.5 text-r3w-add-fg">
               {p.value}
             </span>
           );
         }
         if (p.removed) {
           return (
-            <span key={i} className="rounded bg-red-100 text-red-700 line-through">
+            <span key={i} className="rounded bg-r3w-del px-0.5 text-r3w-del-fg line-through">
               {p.value}
             </span>
           );
@@ -1079,92 +1479,125 @@ function findTextRangeInDoc(doc: PMNode, needle: string): { from: number; to: nu
   return { from, to };
 }
 
-function HistoryPanel({
+const HistoryRow = React.memo(
+  function HistoryRow({
+    entry,
+    now,
+    onRevert,
+  }: {
+    entry: HistoryEntry;
+    now: number;
+    onRevert: (e: HistoryEntry) => void;
+  }) {
+    const exact = useMemo(() => new Date(entry.timestamp).toLocaleString(), [entry.timestamp]);
+    return (
+      <li className="rounded-lg border border-border bg-bg-subtle p-3 text-sm transition hover:border-border-strong">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <Tooltip.Root>
+            <Tooltip.Trigger asChild>
+              <span className="cursor-default text-xs font-medium text-fg-muted">
+                {actionLabel(entry.action)} · {timeAgo(entry.timestamp, now)}
+              </span>
+            </Tooltip.Trigger>
+            <Tooltip.Portal>
+              <Tooltip.Content
+                sideOffset={4}
+                className="rounded-md border border-border bg-bg-elev px-2 py-1 text-xs text-fg shadow-md"
+              >
+                {exact}
+              </Tooltip.Content>
+            </Tooltip.Portal>
+          </Tooltip.Root>
+          <button
+            type="button"
+            onClick={() => onRevert(entry)}
+            className="inline-flex items-center gap-1 rounded-md bg-bg-elev px-2 py-1 text-xs font-medium text-fg-muted transition hover:bg-bg hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          >
+            <RotateCcw size={12} />
+            Revert
+          </button>
+        </div>
+        <DiffView original={entry.original} rewrite={entry.rewrite} />
+      </li>
+    );
+  },
+  (prev, next) =>
+    prev.entry.id === next.entry.id &&
+    prev.onRevert === next.onRevert &&
+    Math.floor(prev.now / 30000) === Math.floor(next.now / 30000),
+);
+
+function HistoryListPanel({
   entries,
   revertError,
   onRevert,
   onClear,
-  onClose,
 }: {
   entries: HistoryEntry[];
   revertError: string | null;
   onRevert: (e: HistoryEntry) => void;
   onClear: () => void;
-  onClose: () => void;
 }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 30000);
-    return () => clearInterval(id);
+    const id = window.setInterval(() => setNow(Date.now()), 30000);
+    return () => window.clearInterval(id);
   }, []);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-      onClick={onClose}
-    >
-      <div
-        className="flex max-h-[80vh] w-[560px] flex-col rounded-lg border border-zinc-200 bg-white shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
-          <h2 className="text-base font-semibold text-zinc-800">History</h2>
-          <div className="flex items-center gap-2">
-            {entries.length > 0 && (
+    <section className="flex flex-1 flex-col overflow-hidden bg-bg-elev text-fg">
+      <div className="flex h-10 items-center justify-between border-b border-border px-4">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-fg-muted">History</h2>
+        {entries.length > 0 && (
+          <Tooltip.Root>
+            <Tooltip.Trigger asChild>
               <button
                 type="button"
                 onClick={onClear}
-                className="text-xs text-zinc-500 hover:text-zinc-800"
+                aria-label="Clear all"
+                className="grid h-7 w-7 place-items-center rounded-md text-fg-muted hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              >
+                <Trash2 size={14} />
+              </button>
+            </Tooltip.Trigger>
+            <Tooltip.Portal>
+              <Tooltip.Content
+                sideOffset={6}
+                className="rounded-md border border-border bg-bg-elev px-2 py-1 text-xs text-fg shadow-md"
               >
                 Clear all
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={onClose}
-              className="text-zinc-400 hover:text-zinc-700"
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-        {revertError && (
-          <div className="border-b border-red-100 bg-red-50 px-4 py-2 text-xs text-red-700">
-            {revertError}
-          </div>
+              </Tooltip.Content>
+            </Tooltip.Portal>
+          </Tooltip.Root>
         )}
-        <div className="flex-1 overflow-y-auto px-4 py-3">
-          {entries.length === 0 ? (
-            <p className="py-8 text-center text-sm text-zinc-400">
-              No rewrites yet. Accept a rewrite from the bubble to start tracking.
-            </p>
-          ) : (
-            <ul className="space-y-3">
-              {entries.map((e) => (
-                <li
-                  key={e.id}
-                  className="rounded border border-zinc-200 bg-zinc-50 p-3 text-sm"
-                >
-                  <div className="mb-1 flex items-center justify-between">
-                    <span className="text-xs font-medium text-zinc-600">
-                      {actionLabel(e.action)} · {timeAgo(e.timestamp, now)}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => onRevert(e)}
-                      className="rounded bg-zinc-100 px-2 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-200"
-                    >
-                      Revert
-                    </button>
-                  </div>
-                  <DiffView original={e.original} rewrite={e.rewrite} />
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
       </div>
-    </div>
+      {revertError && (
+        <div
+          role="alert"
+          className="border-b border-border bg-danger-bg px-4 py-2 text-xs text-danger"
+        >
+          {revertError}
+        </div>
+      )}
+      <div className="flex-1 overflow-y-auto px-4 py-3">
+        {entries.length === 0 ? (
+          <div className="grid h-full place-items-center text-center">
+            <div>
+              <p className="text-sm text-fg-muted">No rewrites yet.</p>
+              <p className="mt-1 text-xs text-fg-subtle">
+                Press Ctrl + Alt + G on selected text to start.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <ul className="space-y-3">
+            {entries.map((e) => (
+              <HistoryRow key={e.id} entry={e} now={now} onRevert={onRevert} />
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
   );
 }
 

@@ -14,10 +14,12 @@
       {
         "label": "main",
         "title": "R3write",
-        "width": 1100,
-        "height": 750,
-        "minWidth": 600,
-        "minHeight": 400
+        "width": 480,
+        "height": 640,
+        "minWidth": 380,
+        "minHeight": 320,
+        "center": true,
+        "resizable": true
       },
       {
         "label": "quick-edit",

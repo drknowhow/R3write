@@ -7,6 +7,26 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ## [Unreleased]
 
 ### Added
+- **UI overhaul — modern minimal + dark mode.**
+  - System-aware light/dark theme with manual override (System / Light / Dark) via a header dropdown. Pre-hydration boot script in `index.html` reads `r3write.theme.v1` from `localStorage` and applies `data-theme` to `<html>` before first paint, eliminating the flash of unstyled / wrong-theme content. Theme transitions wrap in `document.startViewTransition` where supported (WebView2 122+) for a free crossfade.
+  - CSS custom-property design tokens on `:root` and `[data-theme="dark"]` (`--bg`, `--bg-elev`, `--bg-subtle`, `--fg`, `--fg-muted`, `--fg-subtle`, `--border`, `--border-strong`, `--accent`, `--accent-fg`, `--accent-hover`, `--danger`, `--danger-bg`, `--r3w-add`, `--r3w-del`, `--shadow-sm`, `--shadow-md`). Tailwind v4 `@theme` block exposes them as utilities (`bg-bg-elev`, `text-fg-muted`, `border-accent`, …).
+  - Dark-mode-friendly `caret-color` and `::selection` rules for the editor; themed inline-diff add/remove backgrounds and foregrounds.
+  - **Refined header** with brand mark, model · provider StatusPill, theme toggle (DropdownMenu), Info button, Settings button. Lucide icons throughout. Every icon button is wrapped in a Radix Tooltip.
+  - **Radix Dialog + Framer Motion** for Settings and the new About / Info modal — focus traps, Escape handling, fade + scale transitions.
+  - New `src/theme.ts` exporting a `useTheme()` hook that subscribes to `prefers-color-scheme` and persists choice.
+  - New deps: `@radix-ui/react-dialog`, `@radix-ui/react-tooltip`, `@radix-ui/react-dropdown-menu`, `framer-motion`, `lucide-react`.
+- **Main window is now the history view.** The bundled scratch editor's welcome content was moved to an Info modal; the editor itself is kept mounted (hidden) so history `Revert` still has a ProseMirror doc to operate on. The History side-sheet was inlined as the primary content of the main window — the History toggle button is gone because there is nothing to toggle. Default window size 480 × 640.
+- **Settings — Test connection.** A new button issues a tiny `chat({role:"user",content:"ping"})` against the *current draft* settings, waits for the first streamed token, then aborts the rest of the stream. Reports success with first-token latency in ms (green pill) or the upstream error message (red pill). 15 second timeout via `AbortController`. Editing any field clears a stale result; closing the dialog aborts an in-flight test.
+- **About / Info modal.** New `InfoDialog` (Radix) holds the welcome / usage text that previously lived in the editor's initial document — invoked from the new Info icon in the header.
+
+### Changed
+- **`ThinkingIndicator` rewritten to use refs + `requestAnimationFrame`.** Replaces the previous `setNow(Date.now())` 10 Hz state-driven timer; the spinner phrase and elapsed counter now update via direct DOM `textContent` writes, so the component records zero React commits while streaming.
+- **`RenderedMarkdown` and `DiffView` memoised.** `RenderedMarkdown` is wrapped in `React.memo` (the `marked → DOMPurify` pipeline was already memoised on `markdown`); `DiffView` now memoises `diffWordsWithSpace` keyed on `(original, rewritePlain)`.
+- **History rows memoised with bucketed `now`.** Extracted `HistoryRow` (`React.memo`) — only re-renders when its entry id changes or `now` crosses a 30-second boundary, so `timeAgo` ticks no longer re-render every visible row simultaneously. Hover the relative timestamp for an exact-time tooltip.
+- **Vite `manualChunks` (id-based).** `tiptap`, `markdown`, `radix`, `motion`, and `icons` chunks split out so changes in app code do not invalidate the heavy vendor bundles.
+- **Main window default size**: 1100 × 750 → **480 × 640**, centered. Min 380 × 320.
+- **Pre-hydration `<meta name="color-scheme" content="light dark">`** added to `index.html` so the OS-level scrollbar / form controls / underlying webview pick the right native palette before React mounts.
+
 - **Styled rendered output in the quick-edit popup.**
   - The LLM is now allowed (and prompted) to use Markdown when the rewrite is naturally structured: blank-line-separated paragraphs, bullet/numbered lists, `**bold**` / `*italic*` emphasis, headings, blockquotes, and `inline code`. Single-sentence inputs stay unformatted.
   - The popup renders the reply via `marked` → `DOMPurify` (XSS-sanitised) and styles it with the existing `.tiptap` prose rules extended to a shared `.prose-r3w` class, so the popup matches the bundled editor visually.
