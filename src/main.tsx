@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
 import { EditorContent, useEditor } from "@tiptap/react";
-import type { Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
@@ -29,9 +28,12 @@ import {
   CheckCircle2,
   XCircle,
   PlugZap,
+  ChevronDown,
+  Send,
+  BookOpen,
+  Sparkle,
 } from "lucide-react";
 import { useTheme, type ThemeChoice } from "./theme";
-import "tippy.js/dist/tippy.css";
 import "./index.css";
 
 // ---------- Action catalog ----------
@@ -78,13 +80,57 @@ interface LLMClient {
   chat(messages: ChatMessage[], opts?: { signal?: AbortSignal }): AsyncIterable<string>;
 }
 
-const SYSTEM_PROMPT =
+const BASE_SYSTEM_PROMPT =
   "You are an inline writing assistant. Rewrite the user's text per the instruction. " +
   "Reply with ONLY the rewritten text — no preamble, no quotes, no explanation, no surrounding code fences. " +
   "You MAY use Markdown when the rewrite is naturally structured: bullet or numbered lists for enumerations, " +
   "blank-line-separated paragraphs for multi-paragraph prose, **bold** / *italic* for emphasis the user asked for or " +
   "that the source clearly carried, headings for section titles, and `inline code` for code-like fragments. " +
   "Do NOT add structure that isn't warranted: a single sentence stays a single sentence with no formatting.";
+
+const EDU_MARK = "===R3W-EDU===";
+const AFFIRM_MARK = "===R3W-AFFIRM===";
+
+interface ParsedReply {
+  main: string;
+  edu: string;
+  affirm: string;
+}
+
+function parseFeedback(text: string): ParsedReply {
+  if (!text) return { main: "", edu: "", affirm: "" };
+  const eduIdx = text.indexOf(EDU_MARK);
+  const affIdx = text.indexOf(AFFIRM_MARK);
+  if (eduIdx < 0 && affIdx < 0) return { main: text, edu: "", affirm: "" };
+  const cuts = [eduIdx, affIdx].filter((i) => i >= 0).sort((a, b) => a - b);
+  const main = text.slice(0, cuts[0]).trimEnd();
+  let edu = "";
+  let affirm = "";
+  if (eduIdx >= 0) {
+    const next = cuts.find((i) => i > eduIdx);
+    edu = text.slice(eduIdx + EDU_MARK.length, next ?? text.length).trim();
+  }
+  if (affIdx >= 0) {
+    const next = cuts.find((i) => i > affIdx);
+    affirm = text.slice(affIdx + AFFIRM_MARK.length, next ?? text.length).trim();
+  }
+  return { main, edu, affirm };
+}
+
+function buildSystemPrompt(s: { educational: boolean; affirm: boolean }): string {
+  if (!s.educational && !s.affirm) return BASE_SYSTEM_PROMPT;
+  let p = BASE_SYSTEM_PROMPT + "\n\nAdditional output channels (after the rewrite, in this order):";
+  if (s.educational) {
+    p +=
+      `\n- On a NEW LINE write the literal token "${EDU_MARK}" followed by 1–2 short, concrete sentences explaining the most important changes you made and why they improve the writing. Be specific to this rewrite, not generic.`;
+  }
+  if (s.affirm) {
+    p +=
+      `\n- ${s.educational ? "Then " : ""}On a NEW LINE write the literal token "${AFFIRM_MARK}" followed by ONE short sentence of specific, genuine encouragement about what the user did well in the original — what to keep doing.`;
+  }
+  p += "\nNever include these tokens or sections unless these instructions explicitly tell you to.";
+  return p;
+}
 
 function actionInstruction(action: ActionId, customPrompt?: string): string {
   switch (action) {
@@ -231,6 +277,8 @@ interface OllamaSettings {
   baseUrl: string;
   model: string;
   apiKey: string;
+  educational: boolean;
+  affirm: boolean;
 }
 
 const DEFAULT_SETTINGS: OllamaSettings = {
@@ -238,6 +286,8 @@ const DEFAULT_SETTINGS: OllamaSettings = {
   baseUrl: "https://ollama.com",
   model: "gemma4:31b-cloud",
   apiKey: "",
+  educational: false,
+  affirm: false,
 };
 
 const SETTINGS_KEY = "r3write.settings.v1";
@@ -329,7 +379,7 @@ class OllamaClient implements LLMClient {
     const instruction = actionInstruction(action, opts?.customPrompt);
     yield* this.chat(
       [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: buildSystemPrompt(this.settings) },
         { role: "user", content: `${instruction}\n\nText:\n${input}` },
       ],
       { signal: opts?.signal },
@@ -681,6 +731,7 @@ function SettingsDialog({
     | { kind: "err"; message: string };
   const [test, setTest] = useState<TestStatus>({ kind: "idle" });
   const testAbortRef = useRef<AbortController | null>(null);
+  const testCancelledRef = useRef(false);
 
   // Reset draft and test status when dialog re-opens with potentially newer settings.
   useEffect(() => {
@@ -699,8 +750,16 @@ function SettingsDialog({
     setTest((t) => (t.kind === "ok" || t.kind === "err" ? { kind: "idle" } : t));
   };
 
+  const cancelTest = () => {
+    testCancelledRef.current = true;
+    testAbortRef.current?.abort();
+    testAbortRef.current = null;
+    setTest({ kind: "idle" });
+  };
+
   const runTest = async () => {
     testAbortRef.current?.abort();
+    testCancelledRef.current = false;
     const ctrl = new AbortController();
     testAbortRef.current = ctrl;
     setTest({ kind: "testing" });
@@ -731,6 +790,8 @@ function SettingsDialog({
       if (receivedAny) {
         // Our own post-success abort threw — still a pass.
         setTest({ kind: "ok", ms: Math.round(firstTokenAt - startedAt) });
+      } else if (testCancelledRef.current) {
+        // User clicked Cancel — already reset to idle, don't show error.
       } else {
         const aborted = e instanceof DOMException && e.name === "AbortError";
         const msg =
@@ -834,19 +895,40 @@ function SettingsDialog({
                     </Field>
                   )}
 
+                  <Field label="Feedback">
+                    <div className="flex flex-col gap-1.5">
+                      <ToggleRow
+                        label="Educational"
+                        hint="Adds a short note explaining the key changes."
+                        checked={draft.educational}
+                        onChange={(v) => update({ educational: v })}
+                      />
+                      <ToggleRow
+                        label="Affirmation"
+                        hint="Adds a brief encouraging note about your original."
+                        checked={draft.affirm}
+                        onChange={(v) => update({ affirm: v })}
+                      />
+                    </div>
+                  </Field>
+
                   <div className="mt-5 flex items-center justify-between gap-3">
                     <button
                       type="button"
-                      onClick={runTest}
-                      disabled={test.kind === "testing"}
-                      className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-fg transition hover:bg-bg-subtle disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                      onClick={test.kind === "testing" ? cancelTest : runTest}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-fg transition hover:bg-bg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                     >
                       {test.kind === "testing" ? (
-                        <Loader2 size={14} className="animate-spin text-fg-muted" />
+                        <>
+                          <Loader2 size={14} className="animate-spin text-fg-muted" />
+                          Stop test
+                        </>
                       ) : (
-                        <PlugZap size={14} className="text-fg-muted" />
+                        <>
+                          <PlugZap size={14} className="text-fg-muted" />
+                          Test connection
+                        </>
                       )}
-                      {test.kind === "testing" ? "Testing…" : "Test connection"}
                     </button>
                     <div className="flex items-center gap-2">
                       <Dialog.Close asChild>
@@ -907,35 +989,41 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function BubbleButton({
-  children,
-  onClick,
-  active,
-  primary,
-  disabled,
+function ToggleRow({
+  label,
+  hint,
+  checked,
+  onChange,
 }: {
-  children: React.ReactNode;
-  onClick: () => void;
-  active?: boolean;
-  primary?: boolean;
-  disabled?: boolean;
+  label: string;
+  hint: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
 }) {
-  const base = "rounded px-2 py-1 text-xs font-medium transition";
-  const tone = disabled
-    ? "bg-zinc-100 text-zinc-400 cursor-not-allowed"
-    : primary
-      ? "bg-indigo-600 text-white hover:bg-indigo-700"
-      : active
-        ? "bg-zinc-200 text-zinc-900"
-        : "bg-zinc-100 text-zinc-700 hover:bg-zinc-200";
   return (
     <button
       type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className={`${base} ${tone}`}
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className="flex w-full items-start justify-between gap-3 rounded-md border border-border bg-bg p-2.5 text-left transition hover:bg-bg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
     >
-      {children}
+      <span className="flex-1">
+        <span className="block text-sm text-fg">{label}</span>
+        <span className="mt-0.5 block text-[11px] text-fg-muted">{hint}</span>
+      </span>
+      <span
+        aria-hidden
+        className={`mt-0.5 inline-flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition ${
+          checked ? "bg-accent" : "bg-border-strong"
+        }`}
+      >
+        <span
+          className={`block h-4 w-4 rounded-full bg-bg-elev shadow-sm transition-transform ${
+            checked ? "translate-x-4" : "translate-x-0"
+          }`}
+        />
+      </span>
     </button>
   );
 }
@@ -948,10 +1036,121 @@ function BubbleButton({
 // asks Rust to paste the rewrite back into the originating app.
 
 interface Turn {
+  id: string;
   user: string;
   assistant: string;
   userLabel: string;
 }
+
+function Chip({
+  children,
+  onClick,
+  active,
+  primary,
+  disabled,
+  shortcut,
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  active?: boolean;
+  primary?: boolean;
+  disabled?: boolean;
+  shortcut?: string;
+}) {
+  const base =
+    "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40";
+  const tone = disabled
+    ? "bg-bg-subtle text-fg-subtle cursor-not-allowed"
+    : primary
+      ? "bg-accent text-accent-fg hover:bg-accent-hover"
+      : active
+        ? "bg-bg-subtle text-fg ring-1 ring-border-strong"
+        : "bg-bg-subtle text-fg-muted hover:bg-bg-elev hover:text-fg";
+  return (
+    <button type="button" onClick={onClick} disabled={disabled} className={`${base} ${tone}`}>
+      <span>{children}</span>
+      {shortcut && (
+        <kbd className="ml-1 rounded border border-border bg-bg px-1 font-mono text-[10px] text-fg-subtle">
+          {shortcut}
+        </kbd>
+      )}
+    </button>
+  );
+}
+
+type ViewMode = "rendered" | "diff";
+
+const TurnItem = React.memo(
+  function TurnItem({
+    turn,
+    isFirst,
+    isLast,
+    isStreaming,
+    firstTokenMs,
+    streamStartedAt,
+    streamingNodeRef,
+    model,
+    viewMode,
+    originalText,
+  }: {
+    turn: Turn;
+    isFirst: boolean;
+    isLast: boolean;
+    isStreaming: boolean;
+    firstTokenMs: number | null;
+    streamStartedAt: number | null;
+    streamingNodeRef: React.RefObject<HTMLDivElement>;
+    model: string;
+    viewMode: ViewMode;
+    originalText: string;
+  }) {
+    const containerCls = isFirst ? "" : "mt-3 border-t border-border pt-3";
+    const mainText = useMemo(
+      () => parseFeedback(turn.assistant).main || turn.assistant,
+      [turn.assistant],
+    );
+    const showDiff = isLast && !isStreaming && viewMode === "diff" && !!mainText;
+    return (
+      <div className={containerCls}>
+        <div className="text-[10px] font-semibold uppercase tracking-wide text-accent">
+          ▶ {turn.userLabel}
+        </div>
+        <div className="mt-1 break-words text-fg">
+          {isStreaming ? (
+            firstTokenMs === null ? (
+              <ThinkingIndicator startedAt={streamStartedAt} model={model} />
+            ) : (
+              <>
+                <div
+                  ref={streamingNodeRef}
+                  className="whitespace-pre-wrap font-mono text-[13px] text-fg"
+                />
+                <span className="ml-0.5 animate-pulse text-accent">▍</span>
+              </>
+            )
+          ) : showDiff ? (
+            <DiffView original={originalText} rewrite={mainText} />
+          ) : mainText ? (
+            <RenderedMarkdown markdown={mainText} />
+          ) : (
+            <span className="text-fg-subtle">(no response)</span>
+          )}
+        </div>
+      </div>
+    );
+  },
+  (prev, next) =>
+    prev.turn.id === next.turn.id &&
+    prev.turn.assistant === next.turn.assistant &&
+    prev.isFirst === next.isFirst &&
+    prev.isLast === next.isLast &&
+    prev.isStreaming === next.isStreaming &&
+    prev.firstTokenMs === next.firstTokenMs &&
+    prev.streamStartedAt === next.streamStartedAt &&
+    prev.model === next.model &&
+    prev.viewMode === next.viewMode &&
+    prev.originalText === next.originalText,
+);
 
 function QuickEdit() {
   const [settings, setSettings] = useState<OllamaSettings>(() => loadSettings());
@@ -965,14 +1164,16 @@ function QuickEdit() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [firstAction, setFirstAction] = useState<ActionId | null>(null);
-  const [showTone, setShowTone] = useState(false);
   const [showCustom, setShowCustom] = useState(false);
   const [customDraft, setCustomDraft] = useState("");
   const [followUp, setFollowUp] = useState("");
-  const [viewMode, setViewMode] = useState<"rendered" | "plain" | "diff">("rendered");
+  const [viewMode, setViewMode] = useState<ViewMode>("rendered");
   const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null);
+  const [firstTokenMs, setFirstTokenMs] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
+  const streamingNodeRef = useRef<HTMLDivElement>(null!);
+  const streamingBufferRef = useRef("");
 
   useEffect(() => {
     if (threadScrollRef.current) {
@@ -984,17 +1185,19 @@ function QuickEdit() {
     let unlisten: (() => void) | undefined;
     listen<string>("captured-text", (event) => {
       abortRef.current?.abort();
+      streamingBufferRef.current = "";
       setSettings(loadSettings());
       setInput(event.payload);
       setThread([]);
       setPhase("idle");
       setErrorMsg(null);
       setFirstAction(null);
-      setShowTone(false);
       setShowCustom(false);
       setCustomDraft("");
       setFollowUp("");
+      setViewMode("rendered");
       setStreamStartedAt(null);
+      setFirstTokenMs(null);
     }).then((u) => {
       unlisten = u;
     });
@@ -1008,41 +1211,78 @@ function QuickEdit() {
     void invoke("dismiss_popup");
   }, []);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") dismiss();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [dismiss]);
+  // Stop the in-flight stream WITHOUT dismissing the popup. Commits whatever
+  // tokens already arrived to thread state so the user can read / accept /
+  // regenerate the partial result.
+  const stop = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    const partial = streamingBufferRef.current;
+    setThread((tt) => {
+      if (tt.length === 0) return tt;
+      const copy = [...tt];
+      copy[copy.length - 1] = { ...copy[copy.length - 1], assistant: partial };
+      return copy;
+    });
+    setPhase("ready");
+    setStreamStartedAt(null);
+  }, []);
 
+  // Token-by-token DOM writes via rAF instead of setState — keeps React commits
+  // to ~3 per response (start, first-token, final) regardless of token count,
+  // and avoids re-parsing Markdown on every chunk.
   const streamInto = useCallback(async (next: Turn[]) => {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    const startedAt = Date.now();
     setPhase("streaming");
-    setStreamStartedAt(Date.now());
+    setStreamStartedAt(startedAt);
+    setFirstTokenMs(null);
     setErrorMsg(null);
+    streamingBufferRef.current = "";
     setThread(next);
 
-    const messages: ChatMessage[] = [{ role: "system", content: SYSTEM_PROMPT }];
+    const messages: ChatMessage[] = [
+      { role: "system", content: buildSystemPrompt(settings) },
+    ];
     for (const t of next) {
       messages.push({ role: "user", content: t.user });
       if (t.assistant) messages.push({ role: "assistant", content: t.assistant });
     }
 
+    let rafScheduled = false;
+    const flushToDOM = () => {
+      rafScheduled = false;
+      const node = streamingNodeRef.current;
+      if (node) node.textContent = streamingBufferRef.current;
+      if (threadScrollRef.current) {
+        threadScrollRef.current.scrollTop = threadScrollRef.current.scrollHeight;
+      }
+    };
+
     try {
-      let acc = "";
+      let firstSeen = false;
       for await (const chunk of clientRef.current.chat(messages, { signal: ctrl.signal })) {
         if (ctrl.signal.aborted) return;
-        acc += chunk;
-        setThread((tt) => {
-          const copy = [...tt];
-          copy[copy.length - 1] = { ...copy[copy.length - 1], assistant: acc };
-          return copy;
-        });
+        if (!firstSeen && chunk) {
+          firstSeen = true;
+          setFirstTokenMs(Date.now() - startedAt);
+        }
+        streamingBufferRef.current += chunk;
+        if (!rafScheduled) {
+          rafScheduled = true;
+          requestAnimationFrame(flushToDOM);
+        }
       }
       if (!ctrl.signal.aborted) {
+        const finalAssistant = streamingBufferRef.current;
+        setThread((tt) => {
+          if (tt.length === 0) return tt;
+          const copy = [...tt];
+          copy[copy.length - 1] = { ...copy[copy.length - 1], assistant: finalAssistant };
+          return copy;
+        });
         setPhase("ready");
         setStreamStartedAt(null);
       }
@@ -1052,7 +1292,7 @@ function QuickEdit() {
       setPhase("error");
       setStreamStartedAt(null);
     }
-  }, []);
+  }, [settings]);
 
   const runAction = useCallback(
     (action: ActionId, customPromptOverride?: string) => {
@@ -1061,11 +1301,10 @@ function QuickEdit() {
       const userLabel =
         action === "custom" ? customPromptOverride || "Custom" : actionLabel(action);
       setFirstAction(action);
-      setShowTone(false);
       setShowCustom(false);
       setCustomDraft("");
       void streamInto([
-        { user: `${instruction}\n\nText:\n${input}`, assistant: "", userLabel },
+        { id: cryptoId(), user: `${instruction}\n\nText:\n${input}`, assistant: "", userLabel },
       ]);
     },
     [input, streamInto],
@@ -1074,7 +1313,7 @@ function QuickEdit() {
   const sendFollowUp = useCallback(
     (user: string, userLabel: string) => {
       if (thread.length === 0 || phase === "streaming") return;
-      void streamInto([...thread, { user, assistant: "", userLabel }]);
+      void streamInto([...thread, { id: cryptoId(), user, assistant: "", userLabel }]);
     },
     [thread, phase, streamInto],
   );
@@ -1089,16 +1328,14 @@ function QuickEdit() {
   const regenerate = useCallback(() => {
     if (thread.length === 0) return;
     const last = thread[thread.length - 1];
-    void streamInto([...thread.slice(0, -1), { ...last, assistant: "" }]);
+    void streamInto([...thread.slice(0, -1), { ...last, id: cryptoId(), assistant: "" }]);
   }, [thread, streamInto]);
 
   const accept = useCallback(async () => {
     const last = thread[thread.length - 1];
     if (!last?.assistant.trim() || !firstAction) return;
-    // Strip Markdown markers for paste-back: external apps receive clean
-    // prose, not `* item` / `**bold**`. The same stripped form is recorded
-    // in history so revert in the main editor matches what was pasted.
-    const pasteText = markdownToPlain(last.assistant) || last.assistant;
+    const main = parseFeedback(last.assistant).main || last.assistant;
+    const pasteText = markdownToPlain(main) || main;
     const entry: HistoryEntry = {
       id: cryptoId(),
       timestamp: Date.now(),
@@ -1106,10 +1343,6 @@ function QuickEdit() {
       original: input,
       rewrite: pasteText,
     };
-    // Cross-window: target the main webview explicitly. `emit` is a broadcast
-    // and has been observed to silently no-op across windows in some Tauri 2
-    // builds — `emitTo("main", …)` is the explicit form. We also `emit` as a
-    // fallback so the event still reaches any future listeners.
     try {
       await emitTo("main", "history:add", entry);
     } catch (e) {
@@ -1123,241 +1356,396 @@ function QuickEdit() {
     void invoke("accept_rewrite", { text: pasteText });
   }, [thread, input, firstAction]);
 
+  // Keyboard:
+  //   Esc        → dismiss (any phase)
+  //   1..4 / c   → primary actions / open custom (idle, no thread)
+  //   Enter      → accept (ready phase)
+  // Disabled inside inputs/textareas so typing isn't intercepted.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        dismiss();
+        return;
+      }
+      const tgt = e.target as HTMLElement | null;
+      if (tgt && /^(INPUT|TEXTAREA|SELECT)$/.test(tgt.tagName)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (thread.length === 0) {
+        const idleMap: Record<string, ActionId | "custom-open"> = {
+          "1": "improve",
+          "2": "grammar",
+          "3": "shorten",
+          "4": "expand",
+          c: "custom-open",
+          C: "custom-open",
+        };
+        const a = idleMap[e.key];
+        if (!a) return;
+        e.preventDefault();
+        if (a === "custom-open") setShowCustom(true);
+        else runAction(a);
+        return;
+      }
+      if (phase === "ready" && e.key === "Enter") {
+        e.preventDefault();
+        void accept();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [dismiss, thread.length, phase, runAction, accept]);
+
   const lastAssistant = thread[thread.length - 1]?.assistant ?? "";
+  const parsedLast = useMemo(() => parseFeedback(lastAssistant), [lastAssistant]);
+
+  // +N -M words shown only after streaming completes (one-shot diff vs parsed.main).
+  const wordDelta = useMemo(() => {
+    if (phase !== "ready" || !parsedLast.main || !input) return null;
+    const rewritePlain = markdownToPlain(parsedLast.main) || parsedLast.main;
+    const parts = diffWordsWithSpace(input, rewritePlain);
+    let added = 0;
+    let removed = 0;
+    for (const p of parts) {
+      const words = p.value.trim() ? p.value.trim().split(/\s+/).length : 0;
+      if (p.added) added += words;
+      else if (p.removed) removed += words;
+    }
+    return { added, removed };
+  }, [phase, parsedLast.main, input]);
 
   return (
-    <div className="relative flex h-full flex-col gap-2 rounded-lg border border-zinc-300 bg-white p-3 shadow-2xl">
-      <div
-        data-tauri-drag-region
-        onMouseDown={(e) => {
-          if (e.button !== 0) return;
-          if ((e.target as HTMLElement).closest("button, input, textarea, a")) return;
-          void getCurrentWebviewWindow().startDragging();
-        }}
-        className="flex cursor-move items-center justify-between select-none"
-      >
-        <span
+    <Tooltip.Provider delayDuration={250} skipDelayDuration={500}>
+      <div className="relative flex h-full flex-col overflow-hidden rounded-lg border border-border bg-bg-elev text-fg shadow-[var(--shadow-md)]">
+        <div
           data-tauri-drag-region
-          className="pointer-events-none text-[11px] font-medium uppercase tracking-wide text-zinc-500"
+          onMouseDown={(e) => {
+            if (e.button !== 0) return;
+            if (
+              (e.target as HTMLElement).closest("button, input, textarea, a, [data-no-drag]")
+            )
+              return;
+            void getCurrentWebviewWindow().startDragging();
+          }}
+          className="flex h-9 cursor-move select-none items-center justify-between border-b border-border bg-bg-elev/80 px-3 backdrop-blur supports-[backdrop-filter]:bg-bg-elev/60"
         >
-          Quick edit · {settings.model}
-        </span>
-        <button
-          type="button"
-          onClick={dismiss}
-          onMouseDown={(e) => e.stopPropagation()}
-          className="text-xs text-zinc-400 hover:text-zinc-700"
-          title="Esc"
-        >
-          ✕
-        </button>
-      </div>
-      <div
-        onMouseDown={(e) => {
-          if (e.button !== 0) return;
-          e.preventDefault();
-          e.stopPropagation();
-          void getCurrentWebviewWindow().startResizeDragging("SouthEast");
-        }}
-        title="Drag to resize"
-        className="absolute bottom-0 right-0 z-10 h-4 w-4 cursor-se-resize"
-        style={{
-          background:
-            "linear-gradient(135deg, transparent 0 50%, #a1a1aa 50% 60%, transparent 60% 70%, #a1a1aa 70% 80%, transparent 80%)",
-        }}
-      />
-      <div className="max-h-16 overflow-y-auto rounded bg-zinc-50 px-2 py-1 text-xs text-zinc-600">
-        {input || (
-          <span className="italic text-zinc-400">
-            Select text in any app, then press Ctrl+Alt+G.
-          </span>
-        )}
-      </div>
-
-      {thread.length === 0 ? (
-        <div className="flex flex-col gap-2">
-          <div className="flex flex-wrap gap-1">
-            {PRIMARY_ACTIONS.map((a) => (
-              <BubbleButton key={a.id} onClick={() => runAction(a.id)}>
-                {a.label}
-              </BubbleButton>
-            ))}
-            <BubbleButton
-              onClick={() => {
-                setShowTone((v) => !v);
-                setShowCustom(false);
-              }}
-              active={showTone}
+          <div data-tauri-drag-region className="pointer-events-none flex items-center gap-2">
+            <span
+              aria-hidden
+              className="grid h-5 w-5 place-items-center rounded-md bg-accent text-accent-fg"
             >
-              Tone ▾
-            </BubbleButton>
-            <BubbleButton
-              onClick={() => {
-                setShowCustom((v) => !v);
-                setShowTone(false);
-              }}
-              active={showCustom}
-            >
-              Custom…
-            </BubbleButton>
-          </div>
-          {showTone && (
-            <div className="flex flex-wrap gap-1 border-t border-zinc-100 pt-2">
-              {TONE_ACTIONS.map((a) => (
-                <BubbleButton key={a.id} onClick={() => runAction(a.id)}>
-                  {a.label}
-                </BubbleButton>
-              ))}
-            </div>
-          )}
-          {showCustom && (
-            <div className="flex gap-1 border-t border-zinc-100 pt-2">
-              <input
-                autoFocus
-                value={customDraft}
-                onChange={(e) => setCustomDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && customDraft.trim()) {
-                    runAction("custom", customDraft.trim());
-                  }
-                }}
-                placeholder="Describe the rewrite…"
-                className="flex-1 rounded border border-zinc-200 px-2 py-1 text-sm outline-none focus:border-indigo-400"
-              />
-              <BubbleButton
-                onClick={() => customDraft.trim() && runAction("custom", customDraft.trim())}
-              >
-                Run
-              </BubbleButton>
-            </div>
-          )}
-        </div>
-      ) : (
-        <>
-          <div className="flex items-center justify-between text-[10px]">
-            <span className="font-medium uppercase tracking-wide text-zinc-400">
-              {viewMode === "rendered"
-                ? "Latest reply (rendered)"
-                : viewMode === "plain"
-                ? "Latest reply (markdown source)"
-                : "Latest reply as diff vs original"}
+              <Sparkles size={11} strokeWidth={2.5} />
             </span>
-            <div className="flex gap-1 text-zinc-500">
-              {(["rendered", "diff", "plain"] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setViewMode(m)}
-                  className={
-                    viewMode === m
-                      ? "rounded bg-zinc-200 px-1.5 py-0.5 text-zinc-800"
-                      : "rounded px-1.5 py-0.5 hover:bg-zinc-100 hover:text-zinc-700"
-                  }
-                >
-                  {m === "rendered" ? "Rendered" : m === "diff" ? "Diff" : "Source"}
-                </button>
-              ))}
+            <span className="text-[11px] font-medium text-fg">R3write</span>
+            <span className="text-[11px] text-fg-subtle">·</span>
+            <span className="text-[11px] text-fg-muted">{settings.model}</span>
+          </div>
+          <Tooltip.Root>
+            <Tooltip.Trigger asChild>
+              <button
+                type="button"
+                onClick={dismiss}
+                onMouseDown={(e) => e.stopPropagation()}
+                aria-label="Close"
+                className="grid h-6 w-6 place-items-center rounded-md text-fg-muted hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              >
+                <X size={13} />
+              </button>
+            </Tooltip.Trigger>
+            <Tooltip.Portal>
+              <Tooltip.Content
+                sideOffset={6}
+                className="rounded-md border border-border bg-bg-elev px-2 py-1 text-xs text-fg shadow-md"
+              >
+                Close (Esc)
+              </Tooltip.Content>
+            </Tooltip.Portal>
+          </Tooltip.Root>
+        </div>
+
+        <div
+          onMouseDown={(e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            void getCurrentWebviewWindow().startResizeDragging("SouthEast");
+          }}
+          title="Drag to resize"
+          aria-hidden
+          className="absolute bottom-0 right-0 z-10 h-3 w-3 cursor-se-resize"
+          style={{
+            background:
+              "linear-gradient(135deg, transparent 0 50%, var(--fg-subtle) 50% 60%, transparent 60% 70%, var(--fg-subtle) 70% 80%, transparent 80%)",
+          }}
+        />
+
+        <div className="flex flex-1 flex-col gap-2 overflow-hidden p-3">
+          <div className="space-y-0.5">
+            <div className="text-[10px] font-medium uppercase tracking-wide text-fg-subtle">
+              Original
+            </div>
+            <div className="max-h-16 overflow-y-auto rounded-md border border-border bg-bg-subtle px-2 py-1 text-xs text-fg-muted">
+              {input || (
+                <span className="italic text-fg-subtle">
+                  Select text in any app, then press Ctrl + Alt + G.
+                </span>
+              )}
             </div>
           </div>
-          <div
-            ref={threadScrollRef}
-            className="flex-1 min-h-32 overflow-y-auto rounded bg-zinc-50 p-2 text-sm"
-          >
-            {thread.map((turn, i) => {
-              const isLast = i === thread.length - 1;
-              const isStreaming = isLast && phase === "streaming";
-              const isLatestWithText = isLast && !!turn.assistant;
-              return (
-                <div key={i} className={i > 0 ? "mt-3 border-t border-zinc-200 pt-2" : ""}>
-                  <div className="text-[10px] font-semibold uppercase tracking-wide text-indigo-600">
-                    ▶ {turn.userLabel}
-                  </div>
-                  <div className="mt-1 break-words text-zinc-800">
-                    {!turn.assistant ? (
-                      isStreaming ? (
-                        <ThinkingIndicator
-                          startedAt={streamStartedAt}
+
+          {thread.length === 0 ? (
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-1">
+                {PRIMARY_ACTIONS.map((a, idx) => (
+                  <Chip key={a.id} onClick={() => runAction(a.id)} shortcut={String(idx + 1)}>
+                    {a.label}
+                  </Chip>
+                ))}
+                <DropdownMenu.Root>
+                  <DropdownMenu.Trigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded-md bg-bg-subtle px-2 py-1 text-xs font-medium text-fg-muted transition hover:bg-bg-elev hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    >
+                      Tone
+                      <ChevronDown size={11} className="text-fg-subtle" />
+                    </button>
+                  </DropdownMenu.Trigger>
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.Content
+                      align="start"
+                      sideOffset={4}
+                      className="z-50 min-w-[160px] rounded-md border border-border bg-bg-elev p-1 text-sm shadow-md"
+                    >
+                      {TONE_ACTIONS.map((a) => (
+                        <DropdownMenu.Item
+                          key={a.id}
+                          onSelect={() => runAction(a.id)}
+                          className="cursor-pointer rounded px-2 py-1.5 text-fg outline-none data-[highlighted]:bg-bg-subtle"
+                        >
+                          {a.label}
+                        </DropdownMenu.Item>
+                      ))}
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Portal>
+                </DropdownMenu.Root>
+                <Chip onClick={() => setShowCustom((v) => !v)} active={showCustom} shortcut="C">
+                  Custom…
+                </Chip>
+              </div>
+              {showCustom && (
+                <div className="flex gap-1">
+                  <input
+                    autoFocus
+                    value={customDraft}
+                    onChange={(e) => setCustomDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && customDraft.trim()) {
+                        runAction("custom", customDraft.trim());
+                      } else if (e.key === "Escape") {
+                        e.stopPropagation();
+                        setShowCustom(false);
+                      }
+                    }}
+                    placeholder="Describe the rewrite…"
+                    className="flex-1 rounded-md border border-border bg-bg px-2 py-1 text-sm text-fg outline-none placeholder:text-fg-subtle focus:border-accent focus:ring-2 focus:ring-accent/40"
+                  />
+                  <Chip
+                    onClick={() => customDraft.trim() && runAction("custom", customDraft.trim())}
+                    primary
+                    disabled={!customDraft.trim()}
+                  >
+                    Run
+                  </Chip>
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="flex min-h-0 flex-1 gap-2">
+                <div className="flex min-w-0 flex-1 flex-col gap-2">
+                  <div
+                    ref={threadScrollRef}
+                    className="min-h-0 flex-1 overflow-y-auto rounded-md border border-border bg-bg p-2 text-sm"
+                  >
+                    {thread.map((turn, i) => {
+                      const isLast = i === thread.length - 1;
+                      return (
+                        <TurnItem
+                          key={turn.id}
+                          turn={turn}
+                          isFirst={i === 0}
+                          isLast={isLast}
+                          isStreaming={isLast && phase === "streaming"}
+                          firstTokenMs={isLast && phase === "streaming" ? firstTokenMs : null}
+                          streamStartedAt={streamStartedAt}
+                          streamingNodeRef={streamingNodeRef}
                           model={settings.model}
+                          viewMode={viewMode}
+                          originalText={input}
                         />
-                      ) : (
-                        <span className="text-zinc-400">(no response)</span>
-                      )
-                    ) : isLatestWithText && viewMode === "diff" ? (
-                      <DiffView original={input} rewrite={turn.assistant} />
-                    ) : isLatestWithText && viewMode === "plain" ? (
-                      <pre className="whitespace-pre-wrap font-mono text-xs text-zinc-700">
-                        {turn.assistant}
-                      </pre>
-                    ) : (
-                      <RenderedMarkdown markdown={turn.assistant} />
+                      );
+                    })}
+                  </div>
+
+                  {phase === "ready" && (
+                    <div className="flex items-center justify-between gap-2 text-[11px] text-fg-subtle">
+                      <span className="truncate">
+                        {wordDelta && (
+                          <>
+                            <span className="text-r3w-add-fg">+{wordDelta.added}</span>{" "}
+                            <span className="text-r3w-del-fg">−{wordDelta.removed}</span> words
+                          </>
+                        )}
+                        {wordDelta && firstTokenMs !== null && " · "}
+                        {firstTokenMs !== null && (
+                          <span className="tabular-nums">first token {firstTokenMs} ms</span>
+                        )}
+                      </span>
+                      <div
+                        role="tablist"
+                        aria-label="View mode"
+                        className="flex gap-0.5 rounded-md bg-bg-subtle p-0.5"
+                      >
+                        {(["rendered", "diff"] as const).map((m) => (
+                          <button
+                            key={m}
+                            type="button"
+                            role="tab"
+                            aria-selected={viewMode === m}
+                            onClick={() => setViewMode(m)}
+                            className={
+                              viewMode === m
+                                ? "rounded px-2 py-0.5 text-[11px] font-medium text-fg bg-bg-elev shadow-[var(--shadow-sm)]"
+                                : "rounded px-2 py-0.5 text-[11px] font-medium text-fg-muted hover:text-fg"
+                            }
+                          >
+                            {m === "rendered" ? "Rendered" : "Diff"}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {phase === "ready" && (parsedLast.edu || parsedLast.affirm) && (
+                  <motion.aside
+                    initial={{ opacity: 0, x: 8 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ duration: 0.18, ease: "easeOut" }}
+                    className="flex w-[240px] shrink-0 flex-col gap-2 overflow-y-auto"
+                    aria-label="Feedback channels"
+                  >
+                    {parsedLast.edu && (
+                      <div className="rounded-md border border-border bg-bg-subtle p-2.5">
+                        <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-fg-muted">
+                          <BookOpen size={12} className="text-accent" />
+                          Why this works
+                        </div>
+                        <RenderedMarkdown markdown={parsedLast.edu} />
+                      </div>
                     )}
-                    {isStreaming && turn.assistant && (
-                      <span className="ml-0.5 animate-pulse text-indigo-500">▍</span>
+                    {parsedLast.affirm && (
+                      <div className="rounded-md border border-border bg-bg-subtle p-2.5">
+                        <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-fg-muted">
+                          <Sparkle size={12} className="text-accent" />
+                          Note
+                        </div>
+                        <RenderedMarkdown markdown={parsedLast.affirm} />
+                      </div>
                     )}
+                  </motion.aside>
+                )}
+              </div>
+
+              {phase === "error" && (
+                <div role="alert" className="rounded-md bg-danger-bg px-2 py-1.5 text-xs text-danger">
+                  {errorMsg || "Rewrite failed."}
+                </div>
+              )}
+
+              {phase !== "streaming" && (
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex flex-wrap gap-1">
+                    {TONE_ACTIONS.map((a) => (
+                      <Chip
+                        key={a.id}
+                        onClick={() =>
+                          sendFollowUp(actionInstruction(a.id), `Tone: ${a.id.slice(5)}`)
+                        }
+                      >
+                        {a.label}
+                      </Chip>
+                    ))}
+                  </div>
+                  <div className="flex gap-1">
+                    <input
+                      value={followUp}
+                      onChange={(e) => setFollowUp(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") submitFollowUp();
+                      }}
+                      placeholder="Follow up… (e.g. more concise, more formal)"
+                      className="flex-1 rounded-md border border-border bg-bg px-2 py-1 text-sm text-fg outline-none placeholder:text-fg-subtle focus:border-accent focus:ring-2 focus:ring-accent/40"
+                    />
+                    <button
+                      type="button"
+                      onClick={submitFollowUp}
+                      disabled={!followUp.trim()}
+                      aria-label="Send follow-up"
+                      className="grid h-7 w-7 place-items-center rounded-md bg-accent text-accent-fg transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    >
+                      <Send size={13} />
+                    </button>
                   </div>
                 </div>
-              );
-            })}
-          </div>
+              )}
 
-          {phase === "error" && (
-            <div className="rounded bg-red-50 p-2 text-xs text-red-700">
-              {errorMsg || "Rewrite failed."}
-            </div>
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.div
+                  key={phase}
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  transition={{ duration: 0.12, ease: "easeOut" }}
+                  className="flex items-center justify-end gap-1"
+                >
+                  {phase === "streaming" && (
+                    <>
+                      <Chip onClick={dismiss}>Cancel</Chip>
+                      <Chip onClick={stop} primary>
+                        Stop
+                      </Chip>
+                    </>
+                  )}
+                  {phase === "ready" && (
+                    <>
+                      <Chip onClick={dismiss}>Reject</Chip>
+                      <Chip onClick={regenerate}>Regenerate</Chip>
+                      <Chip
+                        onClick={accept}
+                        primary
+                        disabled={!lastAssistant.trim()}
+                        shortcut="↵"
+                      >
+                        Accept &amp; paste
+                      </Chip>
+                    </>
+                  )}
+                  {phase === "error" && (
+                    <>
+                      <Chip onClick={dismiss}>Dismiss</Chip>
+                      <Chip onClick={regenerate} primary>
+                        Retry
+                      </Chip>
+                    </>
+                  )}
+                </motion.div>
+              </AnimatePresence>
+            </>
           )}
-
-          {phase !== "streaming" && (
-            <div className="flex flex-col gap-1">
-              <div className="flex flex-wrap gap-1">
-                {TONE_ACTIONS.map((a) => (
-                  <BubbleButton
-                    key={a.id}
-                    onClick={() =>
-                      sendFollowUp(actionInstruction(a.id), `Tone: ${a.id.slice(5)}`)
-                    }
-                  >
-                    {a.label}
-                  </BubbleButton>
-                ))}
-              </div>
-              <div className="flex gap-1">
-                <input
-                  value={followUp}
-                  onChange={(e) => setFollowUp(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") submitFollowUp();
-                  }}
-                  placeholder="Follow up… (e.g. more concise, more formal)"
-                  className="flex-1 rounded border border-zinc-200 px-2 py-1 text-sm outline-none focus:border-indigo-400"
-                />
-                <BubbleButton onClick={submitFollowUp}>Send</BubbleButton>
-              </div>
-            </div>
-          )}
-
-          <div className="flex justify-end gap-1">
-            {phase === "streaming" && <BubbleButton onClick={dismiss}>Cancel</BubbleButton>}
-            {phase === "ready" && (
-              <>
-                <BubbleButton onClick={dismiss}>Reject</BubbleButton>
-                <BubbleButton onClick={regenerate}>Regenerate</BubbleButton>
-                <BubbleButton onClick={accept} primary disabled={!lastAssistant.trim()}>
-                  Accept &amp; paste
-                </BubbleButton>
-              </>
-            )}
-            {phase === "error" && (
-              <>
-                <BubbleButton onClick={dismiss}>Dismiss</BubbleButton>
-                <BubbleButton onClick={regenerate} primary>
-                  Retry
-                </BubbleButton>
-              </>
-            )}
-          </div>
-        </>
-      )}
-    </div>
+        </div>
+      </div>
+    </Tooltip.Provider>
   );
 }
 
@@ -1600,9 +1988,6 @@ function HistoryListPanel({
     </section>
   );
 }
-
-// Re-export type for downstream files (none yet, but useful when we split).
-export type { LLMClient, ActionId, Editor };
 
 // ---------- Window routing ----------
 

@@ -7,6 +7,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ## [Unreleased]
 
 ### Added
+- **Feedback channels — Educational + Affirmation toggles.** Two new independent toggles under **Settings → Feedback**:
+  - **Educational** appends 1–2 sentences explaining what changed in the rewrite and why.
+  - **Affirmation** appends one short, specific sentence of encouragement about the user's original.
+  - Both default OFF, can be enabled independently, and apply to every turn (first action + follow-ups).
+  - Implemented as a single streaming LLM call: the system prompt instructs the model to append hidden separators `===R3W-EDU===` / `===R3W-AFFIRM===` after the rewrite, which the client parses on completion via `parseFeedback()`. Models that ignore the markers degrade silently — the entire reply is treated as the rewrite.
+  - Channels render as separate side-cards ("Why this works" / "Note") below the result strip, with `framer-motion` fade-in. They are explicitly **excluded** from paste-back, history, and Diff (only `parseFeedback(text).main` is used for those).
+  - New `OllamaSettings` keys `educational` / `affirm`; `loadSettings` already merges defaults so existing `r3write.settings.v1` entries auto-upgrade with both toggles off.
+  - New `ToggleRow` switch component (Radix-free, custom CSS, `role="switch"` + `aria-checked`).
+  - `SYSTEM_PROMPT` constant replaced by `buildSystemPrompt(settings)` builder; both call sites (`OllamaClient.rewrite`, `QuickEdit.streamInto`) now read from the dynamic prompt so toggling at runtime takes effect on the next rewrite.
+
 - **UI overhaul — modern minimal + dark mode.**
   - System-aware light/dark theme with manual override (System / Light / Dark) via a header dropdown. Pre-hydration boot script in `index.html` reads `r3write.theme.v1` from `localStorage` and applies `data-theme` to `<html>` before first paint, eliminating the flash of unstyled / wrong-theme content. Theme transitions wrap in `document.startViewTransition` where supported (WebView2 122+) for a free crossfade.
   - CSS custom-property design tokens on `:root` and `[data-theme="dark"]` (`--bg`, `--bg-elev`, `--bg-subtle`, `--fg`, `--fg-muted`, `--fg-subtle`, `--border`, `--border-strong`, `--accent`, `--accent-fg`, `--accent-hover`, `--danger`, `--danger-bg`, `--r3w-add`, `--r3w-del`, `--shadow-sm`, `--shadow-md`). Tailwind v4 `@theme` block exposes them as utilities (`bg-bg-elev`, `text-fg-muted`, `border-accent`, …).

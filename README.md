@@ -62,6 +62,22 @@ Local-first inline AI rewrite for Windows. Select text anywhere, press
   exact upstream error. 15 second timeout. Editing any field clears a
   stale result so a green "Connected" never lingers after you change
   the model name.
+- **Settings — feedback channels (Educational + Affirmation).** Two
+  independent toggles under **Settings → Feedback**:
+  - **Educational** — after each rewrite, the model adds 1–2 short
+    sentences explaining the most important changes and why they
+    improve the writing.
+  - **Affirmation** — adds one short sentence of specific encouragement
+    about what the original did well.
+
+  Both default OFF, can be enabled independently, and apply to every
+  turn (initial action and follow-ups). Channels render as separate
+  side-cards below the rewrite ("Why this works" / "Note") and are
+  **excluded** from paste-back, history, and the Diff view — only the
+  rewrite itself is treated as the artifact. The model produces them
+  in a single streaming call by appending hidden separators
+  (`===R3W-EDU===` / `===R3W-AFFIRM===`) which the client parses;
+  models that ignore the markers degrade silently to the plain rewrite.
 - **Tray icon.** R3write lives in the system tray. Closing the main
   window hides it to the tray (the app keeps running so the global
   shortcut still fires). Right-click the tray for **Show R3write /
