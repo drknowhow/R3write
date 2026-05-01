@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getVersion } from "@tauri-apps/api/app";
+import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { diffWordsWithSpace, type Change } from "diff";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { marked } from "marked";
@@ -33,6 +34,9 @@ import {
   Send,
   BookOpen,
   Sparkle,
+  Coffee,
+  Heart,
+  ExternalLink,
 } from "lucide-react";
 import { useTheme, type ThemeChoice } from "./theme";
 import "./index.css";
@@ -299,6 +303,16 @@ function sameHotkey(a: HotkeyBinding, b: HotkeyBinding): boolean {
   );
 }
 
+function formatHotkey(h: HotkeyBinding): string {
+  const parts: string[] = [];
+  if (h.ctrl) parts.push("Ctrl");
+  if (h.alt) parts.push("Alt");
+  if (h.shift) parts.push("Shift");
+  if (h.meta) parts.push("Win");
+  parts.push(prettyKeyCode(h.code));
+  return parts.join(" + ");
+}
+
 function prettyKeyCode(code: string): string {
   if (code.startsWith("Key") && code.length === 4) return code.slice(3);
   if (code.startsWith("Digit") && code.length === 6) return code.slice(5);
@@ -547,7 +561,12 @@ function App() {
           </div>
         </header>
 
-        <InfoDialog open={showInfo} onOpenChange={setShowInfo} model={settings.model} />
+        <InfoDialog
+          open={showInfo}
+          onOpenChange={setShowInfo}
+          model={settings.model}
+          hotkey={settings.hotkey}
+        />
         <SettingsDialog
           open={showSettings}
           onOpenChange={setShowSettings}
@@ -566,7 +585,13 @@ function App() {
             setHistory([]);
             setRevertError(null);
           }}
+          hotkey={settings.hotkey}
         />
+
+        <footer className="flex h-8 shrink-0 items-center justify-between border-t border-border bg-bg-elev px-3 text-[11px] text-fg-muted">
+          <span>Like R3write? Tip the dev.</span>
+          <SupportLinks size="sm" />
+        </footer>
 
         <div className="hidden">
           <EditorContent editor={editor} />
@@ -580,10 +605,12 @@ function InfoDialog({
   open,
   onOpenChange,
   model,
+  hotkey,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   model: string;
+  hotkey: HotkeyBinding;
 }) {
   const [version, setVersion] = useState<string | null>(null);
   useEffect(() => {
@@ -649,7 +676,7 @@ function InfoDialog({
                     <p>
                       Select any text in any app, then press{" "}
                       <kbd className="rounded border border-border bg-bg-subtle px-1.5 py-0.5 font-mono text-xs text-fg">
-                        Ctrl + Alt + G
+                        {formatHotkey(hotkey)}
                       </kbd>{" "}
                       to open the rewrite popup.
                     </p>
@@ -722,6 +749,61 @@ function IconButton({
         </Tooltip.Content>
       </Tooltip.Portal>
     </Tooltip.Root>
+  );
+}
+
+const BMC_URL = "https://buymeacoffee.com/drknowhow";
+const SPONSORS_URL = "https://github.com/sponsors/drknowhow";
+
+function SupportLinks({ size = "sm" }: { size?: "sm" | "xs" }) {
+  const btnCls =
+    size === "sm" ? "h-7 w-7" : "h-6 w-6";
+  const iconSize = size === "sm" ? 14 : 12;
+  const tipCls =
+    "rounded-md border border-border bg-bg-elev px-2 py-1 text-xs text-fg shadow-md";
+  return (
+    <div className="flex items-center gap-1">
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>
+          <button
+            type="button"
+            onClick={() => {
+              void openUrl(BMC_URL).catch((e) => console.error("[r3write] BMC:", e));
+            }}
+            aria-label="Buy me a coffee"
+            className={`grid ${btnCls} place-items-center rounded-md text-fg-muted transition hover:bg-bg-subtle hover:text-[#FFDD00] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40`}
+          >
+            <Coffee size={iconSize} />
+          </button>
+        </Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Content sideOffset={6} className={tipCls}>
+            Buy me a coffee
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>
+          <button
+            type="button"
+            onClick={() => {
+              void openUrl(SPONSORS_URL).catch((e) =>
+                console.error("[r3write] Sponsors:", e),
+              );
+            }}
+            aria-label="Sponsor on GitHub"
+            className={`grid ${btnCls} place-items-center rounded-md text-fg-muted transition hover:bg-bg-subtle hover:text-[#ea4aaa] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40`}
+          >
+            <Heart size={iconSize} />
+          </button>
+        </Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Content sideOffset={6} className={tipCls}>
+            Sponsor on GitHub
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+    </div>
   );
 }
 
@@ -818,6 +900,8 @@ function SettingsDialog({
   const testAbortRef = useRef<AbortController | null>(null);
   const testCancelledRef = useRef(false);
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
+  type SettingsTab = "model" | "hotkey" | "feedback" | "support";
+  const [tab, setTab] = useState<SettingsTab>("model");
 
   // Reset draft and test status when dialog re-opens with potentially newer settings.
   useEffect(() => {
@@ -825,6 +909,7 @@ function SettingsDialog({
       setDraft(settings);
       setTest({ kind: "idle" });
       setHotkeyError(null);
+      setTab("model");
     } else {
       testAbortRef.current?.abort();
       testAbortRef.current = null;
@@ -915,16 +1000,46 @@ function SettingsDialog({
               </Dialog.Overlay>
               <Dialog.Content asChild forceMount>
                 <motion.div
-                  className="fixed left-1/2 top-1/2 z-50 w-[440px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-elev p-6 text-fg shadow-md focus:outline-none"
+                  className="fixed left-1/2 top-1/2 z-50 w-[460px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-elev p-6 text-fg shadow-md focus:outline-none"
                   initial={{ opacity: 0, scale: 0.96 }}
                   animate={{ opacity: 1, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.96 }}
                   transition={{ duration: 0.12, ease: "easeOut" }}
                 >
                   <Dialog.Title className="text-base font-semibold text-fg">Settings</Dialog.Title>
-                  <Dialog.Description className="mt-0.5 mb-4 text-xs text-fg-muted">
-                    Configure your model provider.
+                  <Dialog.Description className="sr-only">
+                    Configure model provider, global hotkey, and feedback channels.
                   </Dialog.Description>
+
+                  <div
+                    role="tablist"
+                    aria-label="Settings sections"
+                    className="mt-3 mb-4 flex gap-0.5 rounded-md bg-bg-subtle p-0.5"
+                  >
+                    {(
+                      [
+                        { id: "model", label: "Model" },
+                        { id: "hotkey", label: "Hotkey" },
+                        { id: "feedback", label: "Feedback" },
+                        { id: "support", label: "Support" },
+                      ] as { id: SettingsTab; label: string }[]
+                    ).map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        role="tab"
+                        aria-selected={tab === t.id}
+                        onClick={() => setTab(t.id)}
+                        className={
+                          tab === t.id
+                            ? "flex-1 rounded px-2 py-1 text-xs font-medium text-fg bg-bg-elev shadow-[var(--shadow-sm)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                            : "flex-1 rounded px-2 py-1 text-xs font-medium text-fg-muted transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                        }
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
 
                   <Dialog.Close asChild>
                     <button
@@ -936,6 +1051,8 @@ function SettingsDialog({
                     </button>
                   </Dialog.Close>
 
+                  {tab === "model" && (
+                    <div role="tabpanel">
                   <Field label="Provider">
                     <select
                       value={draft.provider}
@@ -981,7 +1098,11 @@ function SettingsDialog({
                       </p>
                     </Field>
                   )}
+                    </div>
+                  )}
 
+                  {tab === "hotkey" && (
+                    <div role="tabpanel">
                   <Field label="Hotkey">
                     <HotkeyCapture
                       value={draft.hotkey}
@@ -1007,6 +1128,11 @@ function SettingsDialog({
                     )}
                   </Field>
 
+                    </div>
+                  )}
+
+                  {tab === "feedback" && (
+                    <div role="tabpanel">
                   <Field label="Feedback">
                     <div className="flex flex-col gap-1.5">
                       <ToggleRow
@@ -1023,25 +1149,95 @@ function SettingsDialog({
                       />
                     </div>
                   </Field>
+                    </div>
+                  )}
 
-                  <div className="mt-5 flex items-center justify-between gap-3">
-                    <button
-                      type="button"
-                      onClick={test.kind === "testing" ? cancelTest : runTest}
-                      className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-fg transition hover:bg-bg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                    >
-                      {test.kind === "testing" ? (
-                        <>
-                          <Loader2 size={14} className="animate-spin text-fg-muted" />
-                          Stop test
-                        </>
-                      ) : (
-                        <>
-                          <PlugZap size={14} className="text-fg-muted" />
-                          Test connection
-                        </>
-                      )}
-                    </button>
+                  {tab === "support" && (
+                    <div role="tabpanel" className="flex flex-col gap-3">
+                      <div className="rounded-md border border-border bg-bg-subtle p-3">
+                        <div className="flex items-center gap-2">
+                          <span
+                            aria-hidden
+                            className="grid h-7 w-7 place-items-center rounded-md bg-accent text-accent-fg"
+                          >
+                            <Sparkle size={14} strokeWidth={2.5} />
+                          </span>
+                          <h3 className="text-sm font-semibold text-fg">Support R3write</h3>
+                        </div>
+                        <p className="mt-2 text-[12px] leading-relaxed text-fg-muted">
+                          R3write is built and maintained as a free desktop tool. If it saves
+                          you time, a small tip — one-time or recurring — helps fund the next
+                          release.
+                        </p>
+                        <div className="mt-3 flex flex-col gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void openUrl(BMC_URL).catch((e) =>
+                                console.error("[r3write] open BMC failed:", e),
+                              );
+                            }}
+                            className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-[#FFDD00] px-3 py-2 text-sm font-semibold text-black transition hover:bg-[#FFD400] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                          >
+                            <Coffee size={16} strokeWidth={2.5} />
+                            Buy me a coffee
+                            <ExternalLink size={12} className="opacity-70" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void openUrl(SPONSORS_URL).catch((e) =>
+                                console.error("[r3write] open Sponsors failed:", e),
+                              );
+                            }}
+                            className="inline-flex w-full items-center justify-center gap-2 rounded-md bg-[#ea4aaa] px-3 py-2 text-sm font-semibold text-white transition hover:bg-[#d63d99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                          >
+                            <Heart size={14} strokeWidth={2.5} />
+                            Sponsor on GitHub
+                            <ExternalLink size={12} className="opacity-70" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void openUrl("https://github.com/drknowhow/R3write").catch((e) =>
+                            console.error("[r3write] open GitHub failed:", e),
+                          );
+                        }}
+                        className="inline-flex items-center justify-center gap-2 rounded-md border border-border bg-bg px-3 py-2 text-sm text-fg transition hover:bg-bg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                      >
+                        View on GitHub
+                        <ExternalLink size={12} className="text-fg-subtle" />
+                      </button>
+
+                      <p className="text-[11px] text-fg-subtle">
+                        Links open in your default browser.
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="mt-5 flex items-center justify-end gap-3">
+                    {tab === "model" && (
+                      <button
+                        type="button"
+                        onClick={test.kind === "testing" ? cancelTest : runTest}
+                        className="mr-auto inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-fg transition hover:bg-bg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                      >
+                        {test.kind === "testing" ? (
+                          <>
+                            <Loader2 size={14} className="animate-spin text-fg-muted" />
+                            Stop test
+                          </>
+                        ) : (
+                          <>
+                            <PlugZap size={14} className="text-fg-muted" />
+                            Test connection
+                          </>
+                        )}
+                      </button>
+                    )}
                     <div className="flex items-center gap-2">
                       <Dialog.Close asChild>
                         <button
@@ -1080,7 +1276,7 @@ function SettingsDialog({
                     </div>
                   </div>
 
-                  {test.kind === "ok" && (
+                  {tab === "model" && test.kind === "ok" && (
                     <div
                       role="status"
                       className="mt-3 flex items-center gap-2 rounded-md border border-border bg-bg-subtle px-3 py-2 text-xs text-fg"
@@ -1092,7 +1288,7 @@ function SettingsDialog({
                       </span>
                     </div>
                   )}
-                  {test.kind === "err" && (
+                  {tab === "model" && test.kind === "err" && (
                     <div
                       role="alert"
                       className="mt-3 flex items-start gap-2 rounded-md border border-border bg-danger-bg px-3 py-2 text-xs text-danger"
@@ -1719,7 +1915,7 @@ function QuickEdit() {
             <div className="max-h-16 overflow-y-auto rounded-md border border-border bg-bg-subtle px-2 py-1 text-xs text-fg-muted">
               {input || (
                 <span className="italic text-fg-subtle">
-                  Select text in any app, then press Ctrl + Alt + G.
+                  Select text in any app, then press {formatHotkey(settings.hotkey)}.
                 </span>
               )}
             </div>
@@ -1983,6 +2179,10 @@ function QuickEdit() {
             </>
           )}
         </div>
+        <div className="flex h-7 shrink-0 items-center justify-between border-t border-border bg-bg-elev/80 pl-3 pr-5 text-[10px] text-fg-subtle">
+          <span>Support R3write</span>
+          <SupportLinks size="xs" />
+        </div>
       </div>
     </Tooltip.Provider>
   );
@@ -2159,11 +2359,13 @@ function HistoryListPanel({
   revertError,
   onRevert,
   onClear,
+  hotkey,
 }: {
   entries: HistoryEntry[];
   revertError: string | null;
   onRevert: (e: HistoryEntry) => void;
   onClear: () => void;
+  hotkey: HotkeyBinding;
 }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -2212,7 +2414,7 @@ function HistoryListPanel({
             <div>
               <p className="text-sm text-fg-muted">No rewrites yet.</p>
               <p className="mt-1 text-xs text-fg-subtle">
-                Press Ctrl + Alt + G on selected text to start.
+                Press {formatHotkey(hotkey)} on selected text to start.
               </p>
             </div>
           </div>

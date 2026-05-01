@@ -20,6 +20,14 @@
         { "url": "http://localhost:11434/*" },
         { "url": "http://127.0.0.1:11434/*" }
       ]
+    },
+    {
+      "identifier": "shell:allow-open",
+      "allow": [
+        { "url": "https://buymeacoffee.com/*" },
+        { "url": "https://www.buymeacoffee.com/*" },
+        { "url": "https://github.com/*" }
+      ]
     }
   ]
 }

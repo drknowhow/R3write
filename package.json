@@ -17,6 +17,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-http": "^2.0.0",
+    "@tauri-apps/plugin-shell": "^2.3.5",
     "@tiptap/pm": "^2.10.3",
     "@tiptap/react": "^2.10.3",
     "@tiptap/starter-kit": "^2.10.3",
