@@ -4,7 +4,7 @@ import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
-import { emit, emitTo, listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getVersion } from "@tauri-apps/api/app";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
@@ -24,7 +24,6 @@ import {
   Monitor,
   X,
   Trash2,
-  Sparkles,
   RotateCcw,
   Loader2,
   CheckCircle2,
@@ -37,9 +36,12 @@ import {
   Coffee,
   Heart,
   ExternalLink,
+  Minus,
+  Square,
 } from "lucide-react";
-import { useTheme, type ThemeChoice } from "./theme";
+import { useTheme, useThemeFollower, type ThemeChoice } from "./theme";
 import "./index.css";
+import appIconUrl from "./icon.png";
 
 // ---------- Action catalog ----------
 
@@ -313,6 +315,40 @@ function formatHotkey(h: HotkeyBinding): string {
   return parts.join(" + ");
 }
 
+function keyMatchesBinding(e: KeyboardEvent, b: HotkeyBinding): boolean {
+  // Treat numpad Enter as the same physical key for binding purposes.
+  const eCode = e.code === "NumpadEnter" ? "Enter" : e.code;
+  const bCode = b.code === "NumpadEnter" ? "Enter" : b.code;
+  return (
+    eCode === bCode &&
+    e.ctrlKey === b.ctrl &&
+    e.altKey === b.alt &&
+    e.shiftKey === b.shift &&
+    e.metaKey === b.meta
+  );
+}
+
+type BubbleShortcutId =
+  | "improve"
+  | "grammar"
+  | "shorten"
+  | "expand"
+  | "custom"
+  | "accept"
+  | "regenerate";
+
+type BubbleShortcuts = Record<BubbleShortcutId, HotkeyBinding>;
+
+const DEFAULT_BUBBLE_SHORTCUTS: BubbleShortcuts = {
+  improve: { ctrl: false, alt: false, shift: false, meta: false, code: "Digit1" },
+  grammar: { ctrl: false, alt: false, shift: false, meta: false, code: "Digit2" },
+  shorten: { ctrl: false, alt: false, shift: false, meta: false, code: "Digit3" },
+  expand: { ctrl: false, alt: false, shift: false, meta: false, code: "Digit4" },
+  custom: { ctrl: false, alt: false, shift: false, meta: false, code: "KeyC" },
+  accept: { ctrl: false, alt: false, shift: false, meta: false, code: "Enter" },
+  regenerate: { ctrl: false, alt: false, shift: false, meta: false, code: "KeyR" },
+};
+
 function prettyKeyCode(code: string): string {
   if (code.startsWith("Key") && code.length === 4) return code.slice(3);
   if (code.startsWith("Digit") && code.length === 6) return code.slice(5);
@@ -349,6 +385,7 @@ interface OllamaSettings {
   educational: boolean;
   affirm: boolean;
   hotkey: HotkeyBinding;
+  bubbleShortcuts: BubbleShortcuts;
 }
 
 const DEFAULT_SETTINGS: OllamaSettings = {
@@ -359,6 +396,7 @@ const DEFAULT_SETTINGS: OllamaSettings = {
   educational: false,
   affirm: false,
   hotkey: DEFAULT_HOTKEY,
+  bubbleShortcuts: DEFAULT_BUBBLE_SHORTCUTS,
 };
 
 const SETTINGS_KEY = "r3write.settings.v1";
@@ -367,7 +405,15 @@ function loadSettings(): OllamaSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return DEFAULT_SETTINGS;
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    const parsed = JSON.parse(raw) as Partial<OllamaSettings>;
+    const merged: OllamaSettings = { ...DEFAULT_SETTINGS, ...parsed };
+    // Deep-merge bubbleShortcuts so storing an older partial set doesn't drop
+    // any of the keys the runtime expects.
+    merged.bubbleShortcuts = {
+      ...DEFAULT_BUBBLE_SHORTCUTS,
+      ...(parsed.bubbleShortcuts || {}),
+    };
+    return merged;
   } catch {
     return DEFAULT_SETTINGS;
   }
@@ -497,12 +543,25 @@ function App() {
   }, [history]);
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let cancelled = false;
     listen<HistoryEntry>("history:add", (event) => {
-      setHistory((h) => [event.payload, ...h].slice(0, 20));
+      setHistory((h) => {
+        // Dedupe by id — the popup may broadcast more than once for one accept.
+        if (h.some((x) => x.id === event.payload.id)) return h;
+        return [event.payload, ...h].slice(0, 20);
+      });
     }).then((u) => {
-      unlisten = u;
+      if (cancelled) {
+        // Effect was cleaned up before listen() resolved (e.g. StrictMode
+        // double-mount in dev). Unregister immediately so we don't leak a
+        // duplicate listener.
+        u();
+      } else {
+        unlisten = u;
+      }
     });
     return () => {
+      cancelled = true;
       unlisten?.();
     };
   }, []);
@@ -535,14 +594,30 @@ function App() {
   return (
     <Tooltip.Provider delayDuration={250} skipDelayDuration={500}>
       <div className="flex h-full flex-col bg-bg text-fg">
-        <header className="flex h-12 items-center justify-between border-b border-border bg-bg-elev/80 px-4 backdrop-blur supports-[backdrop-filter]:bg-bg-elev/60">
+        <header
+          onMouseDown={(e) => {
+            if (e.button !== 0) return;
+            if (
+              (e.target as HTMLElement).closest(
+                "button, input, textarea, a, select, [data-no-drag], [role=switch], [role=tab], [role=menu], [role=menuitem]",
+              )
+            )
+              return;
+            void getCurrentWebviewWindow().startDragging();
+          }}
+          onDoubleClick={(e) => {
+            if (
+              (e.target as HTMLElement).closest(
+                "button, input, textarea, a, select, [data-no-drag]",
+              )
+            )
+              return;
+            void getCurrentWebviewWindow().toggleMaximize();
+          }}
+          className="flex h-12 cursor-default select-none items-center justify-between border-b border-border bg-bg-elev/80 px-4 backdrop-blur supports-[backdrop-filter]:bg-bg-elev/60"
+        >
           <div className="flex items-center gap-2">
-            <span
-              aria-hidden
-              className="grid h-6 w-6 place-items-center rounded-md bg-accent text-accent-fg"
-            >
-              <Sparkles size={14} strokeWidth={2.5} />
-            </span>
+            <BrandMark size="md" />
             <h1 className="text-sm font-semibold tracking-tight text-fg">R3write</h1>
           </div>
           <div className="flex items-center gap-2">
@@ -558,6 +633,34 @@ function App() {
               onClick={() => setShowSettings(true)}
               icon={<SettingsIcon size={16} />}
             />
+            <span aria-hidden className="mx-1 h-4 w-px bg-border" />
+            <button
+              type="button"
+              onClick={() => void getCurrentWebviewWindow().minimize()}
+              onMouseDown={(e) => e.stopPropagation()}
+              aria-label="Minimize"
+              className="grid h-8 w-8 place-items-center rounded-md text-fg-muted transition hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            >
+              <Minus size={14} />
+            </button>
+            <button
+              type="button"
+              onClick={() => void getCurrentWebviewWindow().toggleMaximize()}
+              onMouseDown={(e) => e.stopPropagation()}
+              aria-label="Maximize"
+              className="grid h-8 w-8 place-items-center rounded-md text-fg-muted transition hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            >
+              <Square size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={() => void getCurrentWebviewWindow().close()}
+              onMouseDown={(e) => e.stopPropagation()}
+              aria-label="Close"
+              className="grid h-8 w-8 place-items-center rounded-md text-fg-muted transition hover:bg-red-500/15 hover:text-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            >
+              <X size={14} />
+            </button>
           </div>
         </header>
 
@@ -565,6 +668,7 @@ function App() {
           open={showInfo}
           onOpenChange={setShowInfo}
           model={settings.model}
+          provider={settings.provider}
           hotkey={settings.hotkey}
         />
         <SettingsDialog
@@ -605,11 +709,13 @@ function InfoDialog({
   open,
   onOpenChange,
   model,
+  provider,
   hotkey,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   model: string;
+  provider: OllamaSettings["provider"];
   hotkey: HotkeyBinding;
 }) {
   const [version, setVersion] = useState<string | null>(null);
@@ -643,12 +749,7 @@ function InfoDialog({
                   transition={{ duration: 0.12, ease: "easeOut" }}
                 >
                   <div className="flex items-center gap-2">
-                    <span
-                      aria-hidden
-                      className="grid h-7 w-7 place-items-center rounded-md bg-accent text-accent-fg"
-                    >
-                      <Sparkles size={16} strokeWidth={2.5} />
-                    </span>
+                    <BrandMark size="lg" />
                     <Dialog.Title className="text-base font-semibold text-fg">
                       About R3write
                     </Dialog.Title>
@@ -685,22 +786,30 @@ function InfoDialog({
                       rewrite streams in. Accept it to paste back into the source app, or dismiss to keep
                       your original.
                     </p>
-                    <p className="text-fg-muted">
-                      The model talks to{" "}
-                      <span className="text-fg">{model}</span>. Open Settings to switch providers or paste
-                      an Ollama Cloud API key.
-                    </p>
                   </div>
 
-                  <div className="mt-5 flex justify-end">
-                    <Dialog.Close asChild>
-                      <button
-                        type="button"
-                        className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                      >
-                        Got it
-                      </button>
-                    </Dialog.Close>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
+                    <div className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5">
+                      <div className="text-fg-subtle">Provider</div>
+                      <div className="mt-0.5 flex items-center gap-1.5 text-fg">
+                        <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-accent" />
+                        {provider === "cloud" ? "Ollama Cloud" : "Local Ollama"}
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5">
+                      <div className="text-fg-subtle">Model</div>
+                      <div className="mt-0.5 truncate font-mono text-fg" title={model}>
+                        {model}
+                      </div>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-[11px] text-fg-subtle">
+                    Change provider, model, hotkey, or feedback channels in Settings.
+                  </p>
+
+                  <div className="mt-4 flex items-center justify-between border-t border-border pt-3">
+                    <span className="text-[11px] text-fg-subtle">Support R3write</span>
+                    <SupportLinks size="xs" />
                   </div>
                 </motion.div>
               </Dialog.Content>
@@ -754,6 +863,20 @@ function IconButton({
 
 const BMC_URL = "https://buymeacoffee.com/drknowhow";
 const SPONSORS_URL = "https://github.com/sponsors/drknowhow";
+
+function BrandMark({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
+  const cls =
+    size === "sm" ? "h-5 w-5" : size === "lg" ? "h-7 w-7" : "h-6 w-6";
+  return (
+    <img
+      src={appIconUrl}
+      alt=""
+      aria-hidden
+      draggable={false}
+      className={`${cls} select-none rounded-md`}
+    />
+  );
+}
 
 function SupportLinks({ size = "sm" }: { size?: "sm" | "xs" }) {
   const btnCls =
@@ -902,6 +1025,13 @@ function SettingsDialog({
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   type SettingsTab = "model" | "hotkey" | "feedback" | "support";
   const [tab, setTab] = useState<SettingsTab>("model");
+  type LocalStatus =
+    | { kind: "idle" }
+    | { kind: "loading" }
+    | { kind: "ok"; models: string[] }
+    | { kind: "err"; message: string };
+  const [localStatus, setLocalStatus] = useState<LocalStatus>({ kind: "idle" });
+  const localFetchRef = useRef<AbortController | null>(null);
 
   // Reset draft and test status when dialog re-opens with potentially newer settings.
   useEffect(() => {
@@ -910,11 +1040,60 @@ function SettingsDialog({
       setTest({ kind: "idle" });
       setHotkeyError(null);
       setTab("model");
+      setLocalStatus({ kind: "idle" });
     } else {
       testAbortRef.current?.abort();
       testAbortRef.current = null;
+      localFetchRef.current?.abort();
+      localFetchRef.current = null;
     }
   }, [open, settings]);
+
+  // When Local Ollama is selected (or the URL changes), poke /api/tags to see if
+  // it's running and what models are pulled. Cloud is skipped — its tags endpoint
+  // is gated and not useful in this context.
+  useEffect(() => {
+    if (!open) return;
+    if (draft.provider !== "local") {
+      setLocalStatus({ kind: "idle" });
+      return;
+    }
+    const handle = window.setTimeout(() => {
+      const ctrl = new AbortController();
+      localFetchRef.current?.abort();
+      localFetchRef.current = ctrl;
+      setLocalStatus({ kind: "loading" });
+      const url = `${draft.baseUrl.replace(/\/$/, "")}/api/tags`;
+      const timeoutId = window.setTimeout(() => ctrl.abort(), 5000);
+      void (async () => {
+        try {
+          const res = await tauriFetch(url, { method: "GET", signal: ctrl.signal });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = (await res.json()) as { models?: { name?: string }[] };
+          const names = (data.models || [])
+            .map((m) => m.name || "")
+            .filter((n) => n.length > 0);
+          if (!ctrl.signal.aborted) setLocalStatus({ kind: "ok", models: names });
+        } catch (e) {
+          if (ctrl.signal.aborted) return;
+          const aborted = e instanceof DOMException && e.name === "AbortError";
+          const msg = aborted
+            ? "Timed out"
+            : e instanceof Error
+              ? e.message
+              : String(e);
+          setLocalStatus({ kind: "err", message: msg });
+        } finally {
+          window.clearTimeout(timeoutId);
+          if (localFetchRef.current === ctrl) localFetchRef.current = null;
+        }
+      })();
+    }, 300);
+    return () => {
+      window.clearTimeout(handle);
+      localFetchRef.current?.abort();
+    };
+  }, [open, draft.provider, draft.baseUrl]);
 
   // Any field change invalidates a previous result so it doesn't mislead.
   const update = (patch: Partial<OllamaSettings>) => {
@@ -1076,12 +1255,80 @@ function SettingsDialog({
                   </Field>
 
                   <Field label="Model">
-                    <input
-                      value={draft.model}
-                      onChange={(e) => update({ model: e.target.value })}
-                      placeholder="gemma4:31b-cloud"
-                      className={inputCls}
-                    />
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={draft.model}
+                        onChange={(e) => update({ model: e.target.value })}
+                        placeholder="gemma4:31b-cloud"
+                        className={inputCls}
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          update({ model: defaultsForProvider(draft.provider).model })
+                        }
+                        className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-fg-muted transition hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                      >
+                        Reset
+                      </button>
+                    </div>
+                    <p className="mt-1 text-[11px] text-fg-subtle">
+                      Default for {draft.provider === "cloud" ? "Ollama Cloud" : "Local Ollama"}:{" "}
+                      <span className="font-mono text-fg-muted">
+                        {defaultsForProvider(draft.provider).model}
+                      </span>
+                    </p>
+                    {draft.provider === "local" && (
+                      <div className="mt-2 rounded-md border border-border bg-bg-subtle p-2 text-[11px]">
+                        {localStatus.kind === "loading" && (
+                          <div className="flex items-center gap-1.5 text-fg-muted">
+                            <Loader2 size={11} className="animate-spin" />
+                            Checking <span className="font-mono">{draft.baseUrl}</span>…
+                          </div>
+                        )}
+                        {localStatus.kind === "ok" && (
+                          <div className="flex flex-col gap-1.5">
+                            <div className="flex items-center gap-1.5 text-r3w-add-fg">
+                              <CheckCircle2 size={11} />
+                              <span className="text-fg">
+                                Local Ollama responding · {localStatus.models.length} model
+                                {localStatus.models.length === 1 ? "" : "s"}
+                              </span>
+                            </div>
+                            {localStatus.models.length > 0 ? (
+                              <div className="flex flex-wrap gap-1">
+                                {localStatus.models.map((m) => (
+                                  <button
+                                    key={m}
+                                    type="button"
+                                    onClick={() => update({ model: m })}
+                                    className={
+                                      draft.model === m
+                                        ? "rounded-md border border-accent bg-accent/15 px-2 py-0.5 text-fg ring-1 ring-accent/40 font-mono"
+                                        : "rounded-md border border-border bg-bg px-2 py-0.5 text-fg-muted transition hover:bg-bg-elev hover:text-fg font-mono"
+                                    }
+                                  >
+                                    {m}
+                                  </button>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-fg-subtle">
+                                No models pulled. Run <span className="font-mono">ollama pull &lt;name&gt;</span> in a terminal.
+                              </p>
+                            )}
+                          </div>
+                        )}
+                        {localStatus.kind === "err" && (
+                          <div className="flex items-start gap-1.5 text-danger">
+                            <XCircle size={11} className="mt-0.5 flex-none" />
+                            <span className="break-words">
+                              Cannot reach Ollama at <span className="font-mono">{draft.baseUrl}</span>: {localStatus.message}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </Field>
 
                   {draft.provider === "cloud" && (
@@ -1127,6 +1374,70 @@ function SettingsDialog({
                       </div>
                     )}
                   </Field>
+
+                  <div className="mb-2 mt-4 flex items-center gap-2">
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-fg-subtle">
+                      Popup shortcuts
+                    </span>
+                    <span className="h-px flex-1 bg-border" />
+                  </div>
+                  <p className="-mt-1 mb-2 text-[11px] text-fg-subtle">
+                    Active inside the quick-edit bubble. Modifiers optional; Esc still closes.
+                  </p>
+                  <div className="flex flex-col gap-1.5">
+                    {(
+                      [
+                        { id: "improve", label: "Improve" },
+                        { id: "grammar", label: "Fix grammar" },
+                        { id: "shorten", label: "Shorten" },
+                        { id: "expand", label: "Expand" },
+                        { id: "custom", label: "Custom prompt" },
+                        { id: "accept", label: "Accept" },
+                        { id: "regenerate", label: "Regenerate" },
+                      ] as { id: BubbleShortcutId; label: string }[]
+                    ).map((row) => (
+                      <div key={row.id} className="flex items-center gap-2">
+                        <span className="w-28 shrink-0 text-xs text-fg-muted">
+                          {row.label}
+                        </span>
+                        <div className="flex-1">
+                          <HotkeyCapture
+                            requireModifier={false}
+                            value={draft.bubbleShortcuts[row.id]}
+                            onChange={(v) =>
+                              update({
+                                bubbleShortcuts: { ...draft.bubbleShortcuts, [row.id]: v },
+                              })
+                            }
+                            onReset={() =>
+                              update({
+                                bubbleShortcuts: {
+                                  ...draft.bubbleShortcuts,
+                                  [row.id]: DEFAULT_BUBBLE_SHORTCUTS[row.id],
+                                },
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-3 flex items-center justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        update({
+                          hotkey: DEFAULT_HOTKEY,
+                          bubbleShortcuts: DEFAULT_BUBBLE_SHORTCUTS,
+                        });
+                        setHotkeyError(null);
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-border bg-bg px-3 py-1.5 text-xs text-fg-muted transition hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    >
+                      <RotateCcw size={12} />
+                      Reset all hotkeys
+                    </button>
+                  </div>
 
                     </div>
                   )}
@@ -1341,10 +1652,12 @@ function HotkeyCapture({
   value,
   onChange,
   onReset,
+  requireModifier = true,
 }: {
   value: HotkeyBinding;
   onChange: (v: HotkeyBinding) => void;
   onReset: () => void;
+  requireModifier?: boolean;
 }) {
   const [capturing, setCapturing] = useState(false);
 
@@ -1359,8 +1672,12 @@ function HotkeyCapture({
       }
       // Wait for a non-modifier keydown.
       if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return;
-      // Require at least one modifier so a stray keystroke can't hijack typing.
-      if (!(e.ctrlKey || e.altKey || e.shiftKey || e.metaKey)) return;
+      // Global hotkeys must include a modifier; in-popup shortcuts may not.
+      if (
+        requireModifier &&
+        !(e.ctrlKey || e.altKey || e.shiftKey || e.metaKey)
+      )
+        return;
       onChange({
         ctrl: e.ctrlKey,
         alt: e.altKey,
@@ -1372,7 +1689,7 @@ function HotkeyCapture({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [capturing, onChange]);
+  }, [capturing, onChange, requireModifier]);
 
   return (
     <div className="flex items-center gap-2">
@@ -1570,6 +1887,7 @@ const TurnItem = React.memo(
 );
 
 function QuickEdit() {
+  useThemeFollower();
   const [settings, setSettings] = useState<OllamaSettings>(() => loadSettings());
   const clientRef = useRef<OllamaClient>(new OllamaClient(settings));
   useEffect(() => {
@@ -1765,18 +2083,11 @@ function QuickEdit() {
     } catch (e) {
       console.error("[r3write] history emitTo(main) failed:", e);
     }
-    try {
-      await emit("history:add", entry);
-    } catch (e) {
-      console.error("[r3write] history emit(broadcast) failed:", e);
-    }
     void invoke("accept_rewrite", { text: pasteText });
   }, [thread, input, firstAction]);
 
   // Keyboard:
-  //   Esc        → dismiss (any phase)
-  //   1..4 / c   → primary actions / open custom (idle, no thread)
-  //   Enter      → accept (ready phase)
+  // Keyboard map driven by settings.bubbleShortcuts (with Esc always dismissing).
   // Disabled inside inputs/textareas so typing isn't intercepted.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1786,43 +2097,46 @@ function QuickEdit() {
       }
       const tgt = e.target as HTMLElement | null;
       if (tgt && /^(INPUT|TEXTAREA|SELECT)$/.test(tgt.tagName)) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const sh = settings.bubbleShortcuts;
       if (thread.length === 0) {
-        const idleMap: Record<string, ActionId | "custom-open"> = {
-          "1": "improve",
-          "2": "grammar",
-          "3": "shorten",
-          "4": "expand",
-          c: "custom-open",
-          C: "custom-open",
-        };
-        const a = idleMap[e.key];
-        if (!a) return;
-        e.preventDefault();
-        if (a === "custom-open") setShowCustom(true);
-        else runAction(a);
+        const actions: { binding: HotkeyBinding; run: () => void }[] = [
+          { binding: sh.improve, run: () => runAction("improve") },
+          { binding: sh.grammar, run: () => runAction("grammar") },
+          { binding: sh.shorten, run: () => runAction("shorten") },
+          { binding: sh.expand, run: () => runAction("expand") },
+          { binding: sh.custom, run: () => setShowCustom(true) },
+        ];
+        for (const a of actions) {
+          if (keyMatchesBinding(e, a.binding)) {
+            e.preventDefault();
+            a.run();
+            return;
+          }
+        }
         return;
       }
       if (phase === "ready") {
-        if (e.key === "Enter") {
+        if (keyMatchesBinding(e, sh.accept)) {
           e.preventDefault();
           void accept();
           return;
         }
-        if (e.key === "r" || e.key === "R") {
+        if (keyMatchesBinding(e, sh.regenerate)) {
           e.preventDefault();
           regenerate();
           return;
         }
       }
-      if (phase === "error" && (e.key === "r" || e.key === "R" || e.key === "Enter")) {
-        e.preventDefault();
-        regenerate();
+      if (phase === "error") {
+        if (keyMatchesBinding(e, sh.regenerate) || keyMatchesBinding(e, sh.accept)) {
+          e.preventDefault();
+          regenerate();
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [dismiss, thread.length, phase, runAction, accept, regenerate]);
+  }, [dismiss, thread.length, phase, runAction, accept, regenerate, settings.bubbleShortcuts]);
 
   const lastAssistant = thread[thread.length - 1]?.assistant ?? "";
   const parsedLast = useMemo(() => parseFeedback(lastAssistant), [lastAssistant]);
@@ -1858,12 +2172,7 @@ function QuickEdit() {
           className="flex h-9 cursor-move select-none items-center justify-between border-b border-border bg-bg-elev/80 px-3 backdrop-blur supports-[backdrop-filter]:bg-bg-elev/60"
         >
           <div data-tauri-drag-region className="pointer-events-none flex items-center gap-2">
-            <span
-              aria-hidden
-              className="grid h-5 w-5 place-items-center rounded-md bg-accent text-accent-fg"
-            >
-              <Sparkles size={11} strokeWidth={2.5} />
-            </span>
+            <BrandMark size="sm" />
             <span className="text-[11px] font-medium text-fg">R3write</span>
             <span className="text-[11px] text-fg-subtle">·</span>
             <span className="text-[11px] text-fg-muted">{settings.model}</span>
@@ -1924,8 +2233,14 @@ function QuickEdit() {
           {thread.length === 0 ? (
             <div className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-1">
-                {PRIMARY_ACTIONS.map((a, idx) => (
-                  <Chip key={a.id} onClick={() => runAction(a.id)} shortcut={String(idx + 1)}>
+                {PRIMARY_ACTIONS.map((a) => (
+                  <Chip
+                    key={a.id}
+                    onClick={() => runAction(a.id)}
+                    shortcut={formatHotkey(
+                      settings.bubbleShortcuts[a.id as BubbleShortcutId],
+                    )}
+                  >
                     {a.label}
                   </Chip>
                 ))}
@@ -1957,7 +2272,11 @@ function QuickEdit() {
                     </DropdownMenu.Content>
                   </DropdownMenu.Portal>
                 </DropdownMenu.Root>
-                <Chip onClick={() => setShowCustom((v) => !v)} active={showCustom} shortcut="C">
+                <Chip
+                  onClick={() => setShowCustom((v) => !v)}
+                  active={showCustom}
+                  shortcut={formatHotkey(settings.bubbleShortcuts.custom)}
+                >
                   Custom…
                 </Chip>
               </div>
@@ -2111,7 +2430,17 @@ function QuickEdit() {
                       value={followUp}
                       onChange={(e) => setFollowUp(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") submitFollowUp();
+                        if (e.key !== "Enter") return;
+                        if (followUp.trim()) {
+                          submitFollowUp();
+                          return;
+                        }
+                        // Empty follow-up + ready: behave like the global Accept
+                        // shortcut so Enter is never a dead key.
+                        if (phase === "ready" && lastAssistant.trim()) {
+                          e.preventDefault();
+                          void accept();
+                        }
                       }}
                       placeholder="Follow up… (e.g. more concise, more formal)"
                       className="flex-1 rounded-md border border-border bg-bg px-2 py-1 text-sm text-fg outline-none placeholder:text-fg-subtle focus:border-accent focus:ring-2 focus:ring-accent/40"
@@ -2151,14 +2480,17 @@ function QuickEdit() {
                       <Chip onClick={dismiss} shortcut="Esc">
                         Reject
                       </Chip>
-                      <Chip onClick={regenerate} shortcut="R">
+                      <Chip
+                        onClick={regenerate}
+                        shortcut={formatHotkey(settings.bubbleShortcuts.regenerate)}
+                      >
                         Regenerate
                       </Chip>
                       <Chip
                         onClick={accept}
                         primary
                         disabled={!lastAssistant.trim()}
-                        shortcut="↵"
+                        shortcut={formatHotkey(settings.bubbleShortcuts.accept)}
                       >
                         Accept &amp; paste
                       </Chip>
@@ -2169,7 +2501,11 @@ function QuickEdit() {
                       <Chip onClick={dismiss} shortcut="Esc">
                         Dismiss
                       </Chip>
-                      <Chip onClick={regenerate} primary shortcut="R">
+                      <Chip
+                        onClick={regenerate}
+                        primary
+                        shortcut={formatHotkey(settings.bubbleShortcuts.regenerate)}
+                      >
                         Retry
                       </Chip>
                     </>

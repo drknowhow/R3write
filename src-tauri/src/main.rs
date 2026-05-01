@@ -6,12 +6,13 @@ use std::time::Duration;
 
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use tauri::{
-    menu::{Menu, MenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, PhysicalPosition, WindowEvent,
 };
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_shell::ShellExt;
 
 #[derive(Default)]
 struct OriginalClipboard(Mutex<Option<String>>);
@@ -55,15 +56,34 @@ fn main() {
             }
 
             let show_item = MenuItem::with_id(app, "tray:show", "Show R3write", true, None::<&str>)?;
-            let quick_item = MenuItem::with_id(
+            let bmc_item = MenuItem::with_id(
                 app,
-                "tray:quick",
-                "Quick edit (Ctrl+Alt+G)",
+                "tray:bmc",
+                "Support · Buy me a coffee",
+                true,
+                None::<&str>,
+            )?;
+            let sponsors_item = MenuItem::with_id(
+                app,
+                "tray:sponsors",
+                "Support · Sponsor on GitHub",
                 true,
                 None::<&str>,
             )?;
             let quit_item = MenuItem::with_id(app, "tray:quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quick_item, &quit_item])?;
+            let sep1 = PredefinedMenuItem::separator(app)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &show_item,
+                    &sep1,
+                    &bmc_item,
+                    &sponsors_item,
+                    &sep2,
+                    &quit_item,
+                ],
+            )?;
 
             let mut builder = TrayIconBuilder::with_id("r3write-tray")
                 .tooltip("R3write")
@@ -71,13 +91,21 @@ fn main() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "tray:show" => show_main(app),
-                    "tray:quick" => {
-                        let app_h = app.clone();
-                        thread::spawn(move || {
-                            if let Err(e) = trigger_quick_edit(&app_h) {
-                                eprintln!("[r3write] tray quick-edit failed: {e}");
-                            }
-                        });
+                    "tray:bmc" => {
+                        if let Err(e) = app
+                            .shell()
+                            .open("https://buymeacoffee.com/drknowhow", None)
+                        {
+                            eprintln!("[r3write] open BMC from tray failed: {e}");
+                        }
+                    }
+                    "tray:sponsors" => {
+                        if let Err(e) = app
+                            .shell()
+                            .open("https://github.com/sponsors/drknowhow", None)
+                        {
+                            eprintln!("[r3write] open Sponsors from tray failed: {e}");
+                        }
                     }
                     "tray:quit" => app.exit(0),
                     _ => {}
