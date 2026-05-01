@@ -6,6 +6,7 @@ import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getVersion } from "@tauri-apps/api/app";
 import { diffWordsWithSpace, type Change } from "diff";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import { marked } from "marked";
@@ -584,6 +585,13 @@ function InfoDialog({
   onOpenChange: (open: boolean) => void;
   model: string;
 }) {
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open || version) return;
+    void getVersion()
+      .then(setVersion)
+      .catch(() => setVersion(null));
+  }, [open, version]);
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal forceMount>
@@ -617,6 +625,11 @@ function InfoDialog({
                     <Dialog.Title className="text-base font-semibold text-fg">
                       About R3write
                     </Dialog.Title>
+                    {version && (
+                      <span className="ml-auto rounded-md border border-border bg-bg-subtle px-2 py-0.5 font-mono text-[11px] tabular-nums text-fg-muted">
+                        v{version}
+                      </span>
+                    )}
                   </div>
                   <Dialog.Description className="sr-only">
                     Usage instructions and current configuration for R3write.

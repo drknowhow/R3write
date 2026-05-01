@@ -6,6 +6,15 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-05-01
+
+First stable release. Captures every milestone shipped to date and marks the
+core feature set as production-ready: system-wide quick edit via global
+hotkey, Ollama (cloud + local) streaming, multi-turn refinement, Markdown +
+diff views, in-app history with Revert, system tray, modern UI with
+system-aware dark mode, configurable hotkey, and Educational / Affirmation
+feedback channels.
+
 ### Added
 - **Configurable global hotkey.** New **Settings → Hotkey** field replaces the hardcoded `Ctrl+Alt+G` binding.
   - JS: new `HotkeyBinding` shape `{ ctrl, alt, shift, meta, code }` (DOM `KeyboardEvent.code`-based, layout-independent), `DEFAULT_HOTKEY`, `sameHotkey()`, `prettyKeyCode()` helpers. Added `hotkey: HotkeyBinding` to `OllamaSettings`; `loadSettings`'s spread-merge auto-fills the default for existing v1 entries.
