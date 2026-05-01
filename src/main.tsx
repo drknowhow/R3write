@@ -272,6 +272,60 @@ const ThinkingIndicator = React.memo(function ThinkingIndicator({
   );
 });
 
+interface HotkeyBinding {
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  meta: boolean;
+  code: string; // DOM KeyboardEvent.code, e.g. "KeyG"
+}
+
+const DEFAULT_HOTKEY: HotkeyBinding = {
+  ctrl: true,
+  alt: true,
+  shift: false,
+  meta: false,
+  code: "KeyG",
+};
+
+function sameHotkey(a: HotkeyBinding, b: HotkeyBinding): boolean {
+  return (
+    a.ctrl === b.ctrl &&
+    a.alt === b.alt &&
+    a.shift === b.shift &&
+    a.meta === b.meta &&
+    a.code === b.code
+  );
+}
+
+function prettyKeyCode(code: string): string {
+  if (code.startsWith("Key") && code.length === 4) return code.slice(3);
+  if (code.startsWith("Digit") && code.length === 6) return code.slice(5);
+  if (/^F\d{1,2}$/.test(code)) return code;
+  switch (code) {
+    case "Space": return "Space";
+    case "Tab": return "Tab";
+    case "Enter": return "Enter";
+    case "Backspace": return "Backspace";
+    case "ArrowUp": return "↑";
+    case "ArrowDown": return "↓";
+    case "ArrowLeft": return "←";
+    case "ArrowRight": return "→";
+    case "Comma": return ",";
+    case "Period": return ".";
+    case "Slash": return "/";
+    case "Backquote": return "`";
+    case "Minus": return "-";
+    case "Equal": return "=";
+    case "Semicolon": return ";";
+    case "Quote": return "'";
+    case "BracketLeft": return "[";
+    case "BracketRight": return "]";
+    case "Backslash": return "\\";
+    default: return code;
+  }
+}
+
 interface OllamaSettings {
   provider: "cloud" | "local";
   baseUrl: string;
@@ -279,6 +333,7 @@ interface OllamaSettings {
   apiKey: string;
   educational: boolean;
   affirm: boolean;
+  hotkey: HotkeyBinding;
 }
 
 const DEFAULT_SETTINGS: OllamaSettings = {
@@ -288,6 +343,7 @@ const DEFAULT_SETTINGS: OllamaSettings = {
   apiKey: "",
   educational: false,
   affirm: false,
+  hotkey: DEFAULT_HOTKEY,
 };
 
 const SETTINGS_KEY = "r3write.settings.v1";
@@ -403,6 +459,22 @@ function App() {
   useEffect(() => {
     saveSettings(settings);
   }, [settings]);
+
+  // Apply persisted hotkey on app start. Rust's setup() registers the default
+  // (Ctrl+Alt+G), so the shortcut is live during boot; this swaps to the user's
+  // saved choice once React mounts. Runs once.
+  useEffect(() => {
+    const persisted = loadSettings().hotkey;
+    if (sameHotkey(persisted, DEFAULT_HOTKEY)) return;
+    void invoke("set_hotkey", {
+      ctrl: persisted.ctrl,
+      alt: persisted.alt,
+      shift: persisted.shift,
+      meta: persisted.meta,
+      code: persisted.code,
+    }).catch((e) => console.error("[r3write] persisted hotkey rebind failed:", e));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
   useEffect(() => {
@@ -732,12 +804,14 @@ function SettingsDialog({
   const [test, setTest] = useState<TestStatus>({ kind: "idle" });
   const testAbortRef = useRef<AbortController | null>(null);
   const testCancelledRef = useRef(false);
+  const [hotkeyError, setHotkeyError] = useState<string | null>(null);
 
   // Reset draft and test status when dialog re-opens with potentially newer settings.
   useEffect(() => {
     if (open) {
       setDraft(settings);
       setTest({ kind: "idle" });
+      setHotkeyError(null);
     } else {
       testAbortRef.current?.abort();
       testAbortRef.current = null;
@@ -895,6 +969,31 @@ function SettingsDialog({
                     </Field>
                   )}
 
+                  <Field label="Hotkey">
+                    <HotkeyCapture
+                      value={draft.hotkey}
+                      onChange={(v) => {
+                        update({ hotkey: v });
+                        setHotkeyError(null);
+                      }}
+                      onReset={() => {
+                        update({ hotkey: DEFAULT_HOTKEY });
+                        setHotkeyError(null);
+                      }}
+                    />
+                    <p className="mt-1 text-[11px] text-fg-subtle">
+                      Used app-wide to open the quick-edit popup. At least one modifier required.
+                    </p>
+                    {hotkeyError && (
+                      <div
+                        role="alert"
+                        className="mt-1.5 rounded-md bg-danger-bg px-2 py-1.5 text-[11px] text-danger"
+                      >
+                        {hotkeyError}
+                      </div>
+                    )}
+                  </Field>
+
                   <Field label="Feedback">
                     <div className="flex flex-col gap-1.5">
                       <ToggleRow
@@ -941,7 +1040,26 @@ function SettingsDialog({
                       </Dialog.Close>
                       <button
                         type="button"
-                        onClick={() => onSave(draft)}
+                        onClick={async () => {
+                          setHotkeyError(null);
+                          if (!sameHotkey(draft.hotkey, settings.hotkey)) {
+                            try {
+                              await invoke("set_hotkey", {
+                                ctrl: draft.hotkey.ctrl,
+                                alt: draft.hotkey.alt,
+                                shift: draft.hotkey.shift,
+                                meta: draft.hotkey.meta,
+                                code: draft.hotkey.code,
+                              });
+                            } catch (e) {
+                              setHotkeyError(
+                                typeof e === "string" ? e : "Failed to bind hotkey.",
+                              );
+                              return;
+                            }
+                          }
+                          onSave(draft);
+                        }}
                         className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                       >
                         Save
@@ -986,6 +1104,96 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="mb-1 block text-xs font-medium text-fg-muted">{label}</span>
       {children}
     </label>
+  );
+}
+
+function KbdDisplay({ binding }: { binding: HotkeyBinding }) {
+  const parts: string[] = [];
+  if (binding.ctrl) parts.push("Ctrl");
+  if (binding.alt) parts.push("Alt");
+  if (binding.shift) parts.push("Shift");
+  if (binding.meta) parts.push("Win");
+  parts.push(prettyKeyCode(binding.code));
+  return (
+    <span className="inline-flex items-center gap-1">
+      {parts.map((p, i) => (
+        <React.Fragment key={i}>
+          <kbd className="rounded border border-border bg-bg-elev px-1.5 py-0.5 font-mono text-[11px] text-fg shadow-[var(--shadow-sm)]">
+            {p}
+          </kbd>
+          {i < parts.length - 1 && <span className="text-fg-subtle">+</span>}
+        </React.Fragment>
+      ))}
+    </span>
+  );
+}
+
+function HotkeyCapture({
+  value,
+  onChange,
+  onReset,
+}: {
+  value: HotkeyBinding;
+  onChange: (v: HotkeyBinding) => void;
+  onReset: () => void;
+}) {
+  const [capturing, setCapturing] = useState(false);
+
+  useEffect(() => {
+    if (!capturing) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        setCapturing(false);
+        return;
+      }
+      // Wait for a non-modifier keydown.
+      if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return;
+      // Require at least one modifier so a stray keystroke can't hijack typing.
+      if (!(e.ctrlKey || e.altKey || e.shiftKey || e.metaKey)) return;
+      onChange({
+        ctrl: e.ctrlKey,
+        alt: e.altKey,
+        shift: e.shiftKey,
+        meta: e.metaKey,
+        code: e.code,
+      });
+      setCapturing(false);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [capturing, onChange]);
+
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => setCapturing((v) => !v)}
+        aria-label="Capture hotkey"
+        className={
+          capturing
+            ? "flex-1 rounded-md border border-accent bg-bg px-2 py-1.5 text-left text-sm ring-2 ring-accent/40 transition"
+            : "flex-1 rounded-md border border-border bg-bg px-2 py-1.5 text-left text-sm text-fg transition hover:bg-bg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        }
+      >
+        {capturing ? (
+          <span className="text-fg-muted">Press a combo… (Esc to cancel)</span>
+        ) : (
+          <KbdDisplay binding={value} />
+        )}
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setCapturing(false);
+          onReset();
+        }}
+        className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-fg-muted transition hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      >
+        Reset
+      </button>
+    </div>
   );
 }
 

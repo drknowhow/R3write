@@ -7,6 +7,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 ## [Unreleased]
 
 ### Added
+- **Configurable global hotkey.** New **Settings → Hotkey** field replaces the hardcoded `Ctrl+Alt+G` binding.
+  - JS: new `HotkeyBinding` shape `{ ctrl, alt, shift, meta, code }` (DOM `KeyboardEvent.code`-based, layout-independent), `DEFAULT_HOTKEY`, `sameHotkey()`, `prettyKeyCode()` helpers. Added `hotkey: HotkeyBinding` to `OllamaSettings`; `loadSettings`'s spread-merge auto-fills the default for existing v1 entries.
+  - New `HotkeyCapture` + `KbdDisplay` components: click the field to enter capture mode, press any combo with at least one modifier, Esc cancels. Reset button snaps back to `Ctrl+Alt+G`.
+  - Save flow invokes the new Rust IPC command `set_hotkey` **before** persisting; if the new combo can't be registered (already owned by the OS or another app), the danger pill surfaces the error and `onSave` does NOT run, so settings stay in sync with what's actually bound.
+  - Mount-time effect in `App()` re-applies the persisted hotkey on app start. Rust still registers the default `Ctrl+Alt+G` in `setup()` so the shortcut works during the brief window before React loads.
+  - Rust: new `CurrentHotkey` Mutex state holding the currently-registered `Shortcut`, new `parse_code` mapping DOM-style code names to `tauri_plugin_global_shortcut::Code` (letters, digits, F1-F12, arrows, common punctuation). `set_hotkey` unregisters the previous binding, registers the new one, and on failure attempts a best-effort restore of the previous binding before returning the error to the JS layer.
+
+### Added
 - **Feedback channels — Educational + Affirmation toggles.** Two new independent toggles under **Settings → Feedback**:
   - **Educational** appends 1–2 sentences explaining what changed in the rewrite and why.
   - **Affirmation** appends one short, specific sentence of encouragement about the user's original.

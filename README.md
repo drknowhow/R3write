@@ -62,6 +62,15 @@ Local-first inline AI rewrite for Windows. Select text anywhere, press
   exact upstream error. 15 second timeout. Editing any field clears a
   stale result so a green "Connected" never lingers after you change
   the model name.
+- **Customisable global hotkey.** **Settings → Hotkey** lets you
+  rebind the quick-edit shortcut. Click the field, press a combo
+  (must include at least one modifier), Save. Conflicts with combos
+  the OS or another app already owns surface as a clear error pill,
+  and the previous binding stays active. Reset returns to the default
+  `Ctrl + Alt + G`. The new binding is applied immediately via a
+  Tauri command (`set_hotkey`) that re-registers the global shortcut
+  without an app restart, and is reapplied on next launch from the
+  persisted setting in `r3write.settings.v1`.
 - **Settings — feedback channels (Educational + Affirmation).** Two
   independent toggles under **Settings → Feedback**:
   - **Educational** — after each rewrite, the model adds 1–2 short

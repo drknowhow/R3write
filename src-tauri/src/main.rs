@@ -16,6 +16,12 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 #[derive(Default)]
 struct OriginalClipboard(Mutex<Option<String>>);
 
+struct CurrentHotkey(Mutex<Shortcut>);
+
+fn default_shortcut() -> Shortcut {
+    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyG)
+}
+
 const QUICK_EDIT_LABEL: &str = "quick-edit";
 const MAIN_LABEL: &str = "main";
 const CLIPBOARD_SENTINEL: &str = "\u{0001}r3write::no-selection\u{0001}";
@@ -23,6 +29,7 @@ const CLIPBOARD_SENTINEL: &str = "\u{0001}r3write::no-selection\u{0001}";
 fn main() {
     tauri::Builder::default()
         .manage(OriginalClipboard::default())
+        .manage(CurrentHotkey(Mutex::new(default_shortcut())))
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(
@@ -40,10 +47,7 @@ fn main() {
                 .build(),
         )
         .setup(|app| {
-            let shortcut = Shortcut::new(
-                Some(Modifiers::CONTROL | Modifiers::ALT),
-                Code::KeyG,
-            );
+            let shortcut = default_shortcut();
             match app.global_shortcut().register(shortcut) {
                 Ok(_) => eprintln!("[r3write] registered Ctrl+Alt+G global shortcut"),
                 Err(e) => eprintln!("[r3write] FAILED to register Ctrl+Alt+G: {e}"),
@@ -103,7 +107,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![accept_rewrite, dismiss_popup])
+        .invoke_handler(tauri::generate_handler![accept_rewrite, dismiss_popup, set_hotkey])
         .run(tauri::generate_context!())
         .expect("error while running R3write");
 }
@@ -225,4 +229,88 @@ fn cursor_position(app: &AppHandle) -> (i32, i32) {
         return (pos.x as i32, pos.y as i32);
     }
     (100, 100)
+}
+
+fn parse_code(s: &str) -> Option<Code> {
+    use Code::*;
+    match s {
+        "KeyA" => Some(KeyA), "KeyB" => Some(KeyB), "KeyC" => Some(KeyC),
+        "KeyD" => Some(KeyD), "KeyE" => Some(KeyE), "KeyF" => Some(KeyF),
+        "KeyG" => Some(KeyG), "KeyH" => Some(KeyH), "KeyI" => Some(KeyI),
+        "KeyJ" => Some(KeyJ), "KeyK" => Some(KeyK), "KeyL" => Some(KeyL),
+        "KeyM" => Some(KeyM), "KeyN" => Some(KeyN), "KeyO" => Some(KeyO),
+        "KeyP" => Some(KeyP), "KeyQ" => Some(KeyQ), "KeyR" => Some(KeyR),
+        "KeyS" => Some(KeyS), "KeyT" => Some(KeyT), "KeyU" => Some(KeyU),
+        "KeyV" => Some(KeyV), "KeyW" => Some(KeyW), "KeyX" => Some(KeyX),
+        "KeyY" => Some(KeyY), "KeyZ" => Some(KeyZ),
+        "Digit0" => Some(Digit0), "Digit1" => Some(Digit1), "Digit2" => Some(Digit2),
+        "Digit3" => Some(Digit3), "Digit4" => Some(Digit4), "Digit5" => Some(Digit5),
+        "Digit6" => Some(Digit6), "Digit7" => Some(Digit7), "Digit8" => Some(Digit8),
+        "Digit9" => Some(Digit9),
+        "F1" => Some(F1), "F2" => Some(F2), "F3" => Some(F3), "F4" => Some(F4),
+        "F5" => Some(F5), "F6" => Some(F6), "F7" => Some(F7), "F8" => Some(F8),
+        "F9" => Some(F9), "F10" => Some(F10), "F11" => Some(F11), "F12" => Some(F12),
+        "Space" => Some(Space),
+        "Tab" => Some(Tab),
+        "Enter" => Some(Enter),
+        "Backspace" => Some(Backspace),
+        "ArrowUp" => Some(ArrowUp),
+        "ArrowDown" => Some(ArrowDown),
+        "ArrowLeft" => Some(ArrowLeft),
+        "ArrowRight" => Some(ArrowRight),
+        "Comma" => Some(Comma),
+        "Period" => Some(Period),
+        "Slash" => Some(Slash),
+        "Backquote" => Some(Backquote),
+        "Minus" => Some(Minus),
+        "Equal" => Some(Equal),
+        "Semicolon" => Some(Semicolon),
+        "Quote" => Some(Quote),
+        "BracketLeft" => Some(BracketLeft),
+        "BracketRight" => Some(BracketRight),
+        "Backslash" => Some(Backslash),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+fn set_hotkey(
+    app: AppHandle,
+    state: tauri::State<CurrentHotkey>,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    meta: bool,
+    code: String,
+) -> Result<(), String> {
+    let mut mods = Modifiers::empty();
+    if ctrl { mods |= Modifiers::CONTROL; }
+    if alt { mods |= Modifiers::ALT; }
+    if shift { mods |= Modifiers::SHIFT; }
+    if meta { mods |= Modifiers::META; }
+    if mods.is_empty() {
+        return Err("At least one modifier (Ctrl, Alt, Shift, Win) is required.".into());
+    }
+    let key = parse_code(&code).ok_or_else(|| format!("Unsupported key: {code}"))?;
+    let next = Shortcut::new(Some(mods), key);
+
+    let prev = state.0.lock().map_err(|e| e.to_string())?.clone();
+    if next == prev {
+        return Ok(());
+    }
+    let gs = app.global_shortcut();
+    if let Err(e) = gs.unregister(prev.clone()) {
+        eprintln!("[r3write] unregister prev failed: {e}");
+    }
+    match gs.register(next.clone()) {
+        Ok(()) => {
+            *state.0.lock().map_err(|e| e.to_string())? = next;
+            eprintln!("[r3write] hotkey rebound to {code} (mods: c={ctrl} a={alt} s={shift} m={meta})");
+            Ok(())
+        }
+        Err(e) => {
+            let _ = gs.register(prev);
+            Err(format!("Could not bind {code}: {e}"))
+        }
+    }
 }
