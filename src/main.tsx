@@ -420,7 +420,48 @@ function loadSettings(): OllamaSettings {
 }
 
 function saveSettings(s: OllamaSettings) {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  // apiKey is persisted via Windows Credential Manager (see saveApiKey),
+  // never written to localStorage.
+  const sanitized = { ...s, apiKey: "" };
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(sanitized));
+}
+
+const API_KEY_NAME = "ollama-api-key";
+
+async function loadApiKey(): Promise<string> {
+  try {
+    const v = await invoke<string | null>("secret_get", { name: API_KEY_NAME });
+    return v ?? "";
+  } catch (e) {
+    console.error("[r3write] secret_get failed:", e);
+    return "";
+  }
+}
+
+async function saveApiKey(key: string): Promise<void> {
+  try {
+    if (key) {
+      await invoke("secret_set", { name: API_KEY_NAME, value: key });
+    } else {
+      await invoke("secret_delete", { name: API_KEY_NAME });
+    }
+  } catch (e) {
+    console.error("[r3write] secret persistence failed:", e);
+  }
+}
+
+// In production builds the Tauri webview's URL is `http://tauri.localhost`,
+// and tauri-plugin-http auto-injects that as the `Origin` header on every
+// request unless we explicitly set one. Ollama's CORS check rejects unknown
+// origins with a flat 403 — including the local server on `localhost:11434`.
+// Match Origin to the target URL's own origin so Ollama always sees a
+// same-origin request and accepts it.
+function originFor(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).origin;
+  } catch {
+    return baseUrl;
+  }
 }
 
 function defaultsForProvider(provider: OllamaSettings["provider"]): Pick<OllamaSettings, "baseUrl" | "model"> {
@@ -436,9 +477,17 @@ class OllamaClient implements LLMClient {
     messages: ChatMessage[],
     opts?: { signal?: AbortSignal },
   ): AsyncIterable<string> {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (this.settings.provider === "cloud" && this.settings.apiKey) {
-      headers["Authorization"] = `Bearer ${this.settings.apiKey}`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Origin: originFor(this.settings.baseUrl),
+    };
+    if (this.settings.provider === "cloud") {
+      // Prefer the in-memory key so Settings → Test works with an unsaved
+      // draft. Fall back to the keyring so the quick-edit popup — which is
+      // a separate window and may have mounted before the key was saved —
+      // picks up the current value.
+      const apiKey = this.settings.apiKey || (await loadApiKey());
+      if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
     }
     const body = JSON.stringify({
       model: this.settings.model,
@@ -517,9 +566,32 @@ function App() {
   const [settings, setSettings] = useState<OllamaSettings>(() => loadSettings());
   const [showSettings, setShowSettings] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
+  const [settingsHydrated, setSettingsHydrated] = useState(false);
+
+  // Hydrate apiKey from Windows Credential Manager. Migrates any legacy
+  // localStorage apiKey into the keyring on first run: if the keyring is empty
+  // we keep the value already loaded into `settings` from useState init, and
+  // the save effect below pushes it to the keyring once hydration completes.
   useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const fromKeyring = await loadApiKey();
+      if (cancelled) return;
+      if (fromKeyring) {
+        setSettings((s) => (s.apiKey === fromKeyring ? s : { ...s, apiKey: fromKeyring }));
+      }
+      setSettingsHydrated(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!settingsHydrated) return;
     saveSettings(settings);
-  }, [settings]);
+    void saveApiKey(settings.apiKey);
+  }, [settings, settingsHydrated]);
 
   // Apply persisted hotkey on app start. Rust's setup() registers the default
   // (Ctrl+Alt+G), so the shortcut is live during boot; this swaps to the user's
@@ -679,6 +751,18 @@ function App() {
             setSettings(s);
             setShowSettings(false);
           }}
+          onClearApiKey={async () => {
+            // Wipe the credential immediately so a Cancel after this point
+            // doesn't leave the previous key behind in Windows Credential
+            // Manager. The save effect would also do this on next save, but
+            // we don't want to depend on that.
+            try {
+              await invoke("secret_delete", { name: API_KEY_NAME });
+            } catch (e) {
+              console.error("[r3write] secret_delete failed:", e);
+            }
+            setSettings((s) => ({ ...s, apiKey: "" }));
+          }}
         />
 
         <HistoryListPanel
@@ -686,6 +770,10 @@ function App() {
           revertError={revertError}
           onRevert={revert}
           onClear={() => {
+            // Wipe storage synchronously — don't rely on the saveHistory
+            // useEffect timing, in case the window is closed before React
+            // flushes the next render.
+            clearHistoryStorage();
             setHistory([]);
             setRevertError(null);
           }}
@@ -1007,13 +1095,22 @@ function SettingsDialog({
   onOpenChange,
   settings,
   onSave,
+  onClearApiKey,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   settings: OllamaSettings;
   onSave: (s: OllamaSettings) => void;
+  onClearApiKey: () => Promise<void>;
 }) {
   const [draft, setDraft] = useState<OllamaSettings>(settings);
+  // Lock the API key field once we have a saved key — user clicks Edit to
+  // replace, or Clear (with confirm) to remove from Windows Credential
+  // Manager. Test-connection success also locks so the user gets a clear
+  // visual that the value is in good shape.
+  const [apiKeyLocked, setApiKeyLocked] = useState<boolean>(() => !!settings.apiKey);
+  const [confirmClearKey, setConfirmClearKey] = useState(false);
+  const [clearingKey, setClearingKey] = useState(false);
   type TestStatus =
     | { kind: "idle" }
     | { kind: "testing" }
@@ -1067,7 +1164,11 @@ function SettingsDialog({
       const timeoutId = window.setTimeout(() => ctrl.abort(), 5000);
       void (async () => {
         try {
-          const res = await tauriFetch(url, { method: "GET", signal: ctrl.signal });
+          const res = await tauriFetch(url, {
+            method: "GET",
+            headers: { Origin: originFor(draft.baseUrl) },
+            signal: ctrl.signal,
+          });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = (await res.json()) as { models?: { name?: string }[] };
           const names = (data.models || [])
@@ -1100,6 +1201,23 @@ function SettingsDialog({
     setDraft((d) => ({ ...d, ...patch }));
     setTest((t) => (t.kind === "ok" || t.kind === "err" ? { kind: "idle" } : t));
   };
+
+  // Auto-lock the API key field as soon as Test connection succeeds with a
+  // non-empty key — gives the user explicit visual confirmation that the
+  // value is in good shape and prevents accidental edits.
+  useEffect(() => {
+    if (test.kind === "ok" && draft.apiKey && !apiKeyLocked) {
+      setApiKeyLocked(true);
+    }
+  }, [test.kind, draft.apiKey, apiKeyLocked]);
+
+  // Reset the pending Clear-confirmation after 4s if the user doesn't follow
+  // through. Same pattern as the History panel's clear-all.
+  useEffect(() => {
+    if (!confirmClearKey) return;
+    const t = window.setTimeout(() => setConfirmClearKey(false), 4000);
+    return () => window.clearTimeout(t);
+  }, [confirmClearKey]);
 
   const cancelTest = () => {
     testCancelledRef.current = true;
@@ -1333,15 +1451,74 @@ function SettingsDialog({
 
                   {draft.provider === "cloud" && (
                     <Field label="API key">
-                      <input
-                        type="password"
-                        value={draft.apiKey}
-                        onChange={(e) => update({ apiKey: e.target.value })}
-                        placeholder="ollama-…"
-                        className={inputCls}
-                      />
+                      {apiKeyLocked ? (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="password"
+                            value="••••••••••••"
+                            readOnly
+                            aria-label="Stored API key (locked)"
+                            className={`${inputCls} cursor-not-allowed bg-bg-subtle text-fg-muted`}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setConfirmClearKey(false);
+                              setApiKeyLocked(false);
+                              update({ apiKey: "" });
+                            }}
+                            className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-fg-muted transition hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                          >
+                            Edit
+                          </button>
+                          {confirmClearKey ? (
+                            <button
+                              type="button"
+                              autoFocus
+                              disabled={clearingKey}
+                              onClick={async () => {
+                                setClearingKey(true);
+                                try {
+                                  await onClearApiKey();
+                                  update({ apiKey: "" });
+                                  setApiKeyLocked(false);
+                                  setTest({ kind: "idle" });
+                                } finally {
+                                  setClearingKey(false);
+                                  setConfirmClearKey(false);
+                                }
+                              }}
+                              className="inline-flex items-center gap-1 rounded-md bg-danger-bg px-2 py-1.5 text-xs font-semibold text-danger ring-1 ring-danger/40 transition hover:bg-danger/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/60 disabled:opacity-60"
+                            >
+                              <Trash2 size={12} />
+                              {clearingKey ? "Clearing…" : "Confirm · remove"}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmClearKey(true)}
+                              aria-label="Clear API key"
+                              className="inline-flex items-center gap-1 rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-fg-muted transition hover:bg-bg-subtle hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                            >
+                              <Trash2 size={12} />
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <input
+                          type="password"
+                          value={draft.apiKey}
+                          onChange={(e) => update({ apiKey: e.target.value })}
+                          placeholder="ollama-…"
+                          className={inputCls}
+                          autoFocus
+                        />
+                      )}
                       <p className="mt-1 text-[11px] text-fg-subtle">
-                        Stored in localStorage for now; will move to Windows Credential Manager in a later milestone.
+                        {apiKeyLocked
+                          ? "Saved in Windows Credential Manager. Edit to replace, Clear to remove."
+                          : "Stored securely in Windows Credential Manager once saved."}
                       </p>
                     </Field>
                   )}
@@ -2573,7 +2750,20 @@ function loadHistory(): HistoryEntry[] {
 
 function saveHistory(entries: HistoryEntry[]) {
   try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(entries));
+    if (entries.length === 0) {
+      // Permanent removal: delete the key outright instead of writing "[]".
+      // After this the next loadHistory() returns [] from the missing-key
+      // branch — there is no soft-deleted state anywhere to recover.
+      localStorage.removeItem(HISTORY_KEY);
+    } else {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(entries));
+    }
+  } catch {}
+}
+
+function clearHistoryStorage() {
+  try {
+    localStorage.removeItem(HISTORY_KEY);
   } catch {}
 }
 
@@ -2709,32 +2899,58 @@ function HistoryListPanel({
     return () => window.clearInterval(id);
   }, []);
 
+  const [confirmClear, setConfirmClear] = useState(false);
+  useEffect(() => {
+    if (!confirmClear) return;
+    const t = window.setTimeout(() => setConfirmClear(false), 4000);
+    return () => window.clearTimeout(t);
+  }, [confirmClear]);
+  // Reset the pending-confirm if entries hit zero underneath (e.g. confirm
+  // expires after a clear actually ran, or another path emptied the list).
+  useEffect(() => {
+    if (entries.length === 0) setConfirmClear(false);
+  }, [entries.length]);
+
   return (
     <section className="flex flex-1 flex-col overflow-hidden bg-bg-elev text-fg">
       <div className="flex h-10 items-center justify-between border-b border-border px-4">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-fg-muted">History</h2>
-        {entries.length > 0 && (
-          <Tooltip.Root>
-            <Tooltip.Trigger asChild>
-              <button
-                type="button"
-                onClick={onClear}
-                aria-label="Clear all"
-                className="grid h-7 w-7 place-items-center rounded-md text-fg-muted hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-              >
-                <Trash2 size={14} />
-              </button>
-            </Tooltip.Trigger>
-            <Tooltip.Portal>
-              <Tooltip.Content
-                sideOffset={6}
-                className="rounded-md border border-border bg-bg-elev px-2 py-1 text-xs text-fg shadow-md"
-              >
-                Clear all
-              </Tooltip.Content>
-            </Tooltip.Portal>
-          </Tooltip.Root>
-        )}
+        {entries.length > 0 &&
+          (confirmClear ? (
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmClear(false);
+                onClear();
+              }}
+              autoFocus
+              className="inline-flex items-center gap-1 rounded-md bg-danger-bg px-2 py-1 text-[11px] font-semibold text-danger ring-1 ring-danger/40 transition hover:bg-danger/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/60"
+            >
+              <Trash2 size={12} />
+              Confirm · permanent
+            </button>
+          ) : (
+            <Tooltip.Root>
+              <Tooltip.Trigger asChild>
+                <button
+                  type="button"
+                  onClick={() => setConfirmClear(true)}
+                  aria-label="Clear all"
+                  className="grid h-7 w-7 place-items-center rounded-md text-fg-muted hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </Tooltip.Trigger>
+              <Tooltip.Portal>
+                <Tooltip.Content
+                  sideOffset={6}
+                  className="rounded-md border border-border bg-bg-elev px-2 py-1 text-xs text-fg shadow-md"
+                >
+                  Clear all (permanent)
+                </Tooltip.Content>
+              </Tooltip.Portal>
+            </Tooltip.Root>
+          ))}
       </div>
       {revertError && (
         <div

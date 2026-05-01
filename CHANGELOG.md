@@ -6,6 +6,50 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+### Added
+- **API key lock + clear flow.** Settings → cloud → API key now shows a
+  locked masked field when a key is already saved (and auto-locks the
+  moment Test connection succeeds). Two new buttons sit next to it:
+  - **Edit** — unlocks the field and clears the draft so the user can
+    paste a fresh key.
+  - **Clear** — two-step confirm pill (auto-resets after 4s); on confirm
+    it calls `secret_delete` directly so the credential is removed from
+    Windows Credential Manager immediately, regardless of whether the
+    user later cancels the modal.
+
+### Fixed
+- **Cloud Ollama 401 in the quick-edit popup.** The popup is rendered in a
+  separate webview with its own React app and never read the keyring on
+  mount, so `OllamaClient` had an empty `apiKey` and the cloud chat
+  request went out without an `Authorization` header. `OllamaClient.chat`
+  now falls back to the keyring when the in-memory key is empty —
+  preserving Settings → Test against unsaved draft keys while letting the
+  popup pick up keys saved after it mounted.
+- **Local Ollama 403 in installed builds.** `tauri-plugin-http` auto-injects
+  the webview's `Origin` (`http://tauri.localhost` in production), which
+  Ollama's CORS check rejects with a flat 403 — so Settings showed
+  "Cannot reach Ollama at http://localhost:11434: HTTP 403" and Test
+  Connection failed even with Ollama running. Two-part fix:
+  - Enable the plugin's `unsafe-headers` Cargo feature so it doesn't
+    `append()` a second `Origin` header on top of ours.
+  - Both `/api/tags` and `/api/chat` requests set `Origin` explicitly to
+    the target URL's origin, so Ollama sees a same-origin request and
+    accepts it.
+
+### Changed
+- **API key now stored in Windows Credential Manager.** The Ollama Cloud
+  API key moves out of `localStorage` and into the Windows Credential
+  Manager (service `R3write`, account `ollama-api-key`) via the `keyring`
+  crate. Any pre-existing localStorage value is migrated to the credential
+  store on first launch and stripped from `r3write.settings.v1` on the
+  next save.
+  - Rust: new `secret_set` / `secret_get` / `secret_delete` Tauri commands
+    (`src-tauri/src/main.rs`) backed by `keyring::Entry`.
+  - JS: `loadApiKey` / `saveApiKey` helpers; settings hydration is gated
+    on the keyring read so we don't overwrite a stored secret with the
+    empty default before it loads.
+  - Settings UI helper text updated to reflect the new storage location.
+
 ## [1.0.0] - 2026-05-01
 
 First stable release. Captures every milestone shipped to date and marks the

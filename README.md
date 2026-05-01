@@ -179,13 +179,15 @@ Settings are stored in `localStorage` under `r3write.settings.v1`:
 | provider   | `cloud`              | `cloud` or `local`                           |
 | baseUrl    | `https://ollama.com` | auto-filled when provider toggles            |
 | model      | `gemma4:31b-cloud`   | any Ollama model name your provider serves   |
-| apiKey     | (empty)              | required for cloud; ignored for local        |
+| apiKey     | — (keyring)          | stored in Windows Credential Manager, not in localStorage |
 
 Theme preference is stored under `r3write.theme.v1` (`system` /
 `light` / `dark`) and applied pre-hydration to avoid flash.
 
-API keys live in `localStorage` for now; they will move to Windows
-Credential Manager (via the `keyring` crate) before 1.0.
+API keys are stored in **Windows Credential Manager** via the `keyring`
+crate (service `R3write`, account `ollama-api-key`) — they never touch
+`localStorage`. Any legacy localStorage value is migrated to the
+credential store automatically on first launch.
 
 ## Layout
 

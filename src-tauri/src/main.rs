@@ -136,7 +136,14 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![accept_rewrite, dismiss_popup, set_hotkey])
+        .invoke_handler(tauri::generate_handler![
+            accept_rewrite,
+            dismiss_popup,
+            set_hotkey,
+            secret_set,
+            secret_get,
+            secret_delete,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running R3write");
 }
@@ -341,5 +348,33 @@ fn set_hotkey(
             let _ = gs.register(prev);
             Err(format!("Could not bind {code}: {e}"))
         }
+    }
+}
+
+const KEYRING_SERVICE: &str = "R3write";
+
+#[tauri::command]
+fn secret_set(name: String, value: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &name).map_err(|e| e.to_string())?;
+    entry.set_password(&value).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn secret_get(name: String) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &name).map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(s) => Ok(Some(s)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+fn secret_delete(name: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, &name).map_err(|e| e.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
     }
 }
