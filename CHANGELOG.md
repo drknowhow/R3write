@@ -6,6 +6,13 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-05-16
+
+### Fixed
+- **Quick-edit popup closing while being dragged.** With "Click outside to dismiss" enabled, the native window-drag operation produced a brief webview blur that was misread as the user clicking away. The blur handler now ignores blur cycles that occur during a mouse drag and defers the dismiss long enough for focus to return.
+- **Settings dialog tab strip overflowing.** With seven tabs the horizontal `flex-1` strip clipped the longer labels and looked broken on the 480 px main window. Tabs now live in a 124 px vertical sidebar; the dialog widens up to 640 px when room allows and the content column scrolls independently.
+- **Settings dialog perceived slow open.** The autostart status probe (`reg query` subprocess, 50–150 ms on Windows) is now deferred past the open animation so the dialog paints immediately and the toggle hydrates after.
+
 ## [1.2.0] - 2026-05-16
 
 ### Added

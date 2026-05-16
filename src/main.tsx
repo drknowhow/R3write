@@ -1736,12 +1736,26 @@ function SettingsDialog({
   }, [open, settings]);
 
   // Read the OS-level autostart flag on open. Reflects whatever the registry
-  // says, not the (possibly out-of-date) localStorage value.
+  // says, not the (possibly out-of-date) localStorage value. Defer the probe
+  // by one frame so the dialog's open animation paints first — `reg query`
+  // takes 50-150ms on Windows and would otherwise show up as a UI stall.
   useEffect(() => {
     if (!open) return;
-    void invoke<boolean>("autostart_get")
-      .then((v) => setAutostartChecked(v))
-      .catch(() => setAutostartChecked(null));
+    let cancelled = false;
+    const id = window.setTimeout(() => {
+      if (cancelled) return;
+      void invoke<boolean>("autostart_get")
+        .then((v) => {
+          if (!cancelled) setAutostartChecked(v);
+        })
+        .catch(() => {
+          if (!cancelled) setAutostartChecked(null);
+        });
+    }, 50);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(id);
+    };
   }, [open]);
 
   // When Local Ollama is selected (or the URL changes), poke /api/tags to see if
@@ -1895,7 +1909,7 @@ function SettingsDialog({
               </Dialog.Overlay>
               <Dialog.Content asChild forceMount>
                 <motion.div
-                  className="fixed left-1/2 top-1/2 z-50 w-[460px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-elev p-6 text-fg shadow-md focus:outline-none"
+                  className="fixed left-1/2 top-1/2 z-50 flex max-h-[90vh] w-[clamp(460px,94vw,640px)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-border bg-bg-elev p-6 text-fg shadow-md focus:outline-none"
                   initial={{ opacity: 0, scale: 0.96 }}
                   animate={{ opacity: 1, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.96 }}
@@ -1906,39 +1920,6 @@ function SettingsDialog({
                     Configure model provider, global hotkey, and feedback channels.
                   </Dialog.Description>
 
-                  <div
-                    role="tablist"
-                    aria-label="Settings sections"
-                    className="mt-3 mb-4 flex gap-0.5 rounded-md bg-bg-subtle p-0.5"
-                  >
-                    {(
-                      [
-                        { id: "model", label: "Model" },
-                        { id: "hotkey", label: "Hotkey" },
-                        { id: "feedback", label: "Feedback" },
-                        { id: "templates", label: "Templates" },
-                        { id: "glossary", label: "Glossary" },
-                        { id: "advanced", label: "Advanced" },
-                        { id: "support", label: "Support" },
-                      ] as { id: SettingsTab; label: string }[]
-                    ).map((t) => (
-                      <button
-                        key={t.id}
-                        type="button"
-                        role="tab"
-                        aria-selected={tab === t.id}
-                        onClick={() => setTab(t.id)}
-                        className={
-                          tab === t.id
-                            ? "flex-1 rounded px-2 py-1 text-xs font-medium text-fg bg-bg-elev shadow-[var(--shadow-sm)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                            : "flex-1 rounded px-2 py-1 text-xs font-medium text-fg-muted transition hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                        }
-                      >
-                        {t.label}
-                      </button>
-                    ))}
-                  </div>
-
                   <Dialog.Close asChild>
                     <button
                       type="button"
@@ -1948,6 +1929,42 @@ function SettingsDialog({
                       <X size={14} />
                     </button>
                   </Dialog.Close>
+
+                  <div className="mt-3 grid min-h-0 flex-1 grid-cols-[124px_minmax(0,1fr)] gap-4">
+                    <nav
+                      role="tablist"
+                      aria-label="Settings sections"
+                      className="flex flex-col gap-0.5 self-start rounded-md bg-bg-subtle p-1"
+                    >
+                      {(
+                        [
+                          { id: "model", label: "Model" },
+                          { id: "hotkey", label: "Hotkey" },
+                          { id: "feedback", label: "Feedback" },
+                          { id: "templates", label: "Templates" },
+                          { id: "glossary", label: "Glossary" },
+                          { id: "advanced", label: "Advanced" },
+                          { id: "support", label: "Support" },
+                        ] as { id: SettingsTab; label: string }[]
+                      ).map((t) => (
+                        <button
+                          key={t.id}
+                          type="button"
+                          role="tab"
+                          aria-selected={tab === t.id}
+                          onClick={() => setTab(t.id)}
+                          className={
+                            tab === t.id
+                              ? "rounded px-2 py-1.5 text-left text-xs font-medium text-fg bg-bg-elev shadow-[var(--shadow-sm)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                              : "rounded px-2 py-1.5 text-left text-xs font-medium text-fg-muted transition hover:bg-bg-elev/60 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                          }
+                        >
+                          {t.label}
+                        </button>
+                      ))}
+                    </nav>
+
+                    <div className="min-w-0 overflow-y-auto pr-1">
 
                   {tab === "model" && (
                     <div role="tabpanel">
@@ -2467,6 +2484,8 @@ function SettingsDialog({
                       </p>
                     </div>
                   )}
+                    </div>
+                  </div>
 
                   <div className="mt-5 flex items-center justify-end gap-3">
                     {tab === "model" && (
@@ -2918,13 +2937,40 @@ export function QuickEdit() {
   }, []);
 
   // Click-outside dismiss: bind to window blur when the user has opted in.
-  // The popup is alwaysOnTop, so blur means the user clicked back into the
-  // source app (or anywhere else).
+  // Tauri's `startDragging` and `startResizeDragging` both hand the webview
+  // off to a native window-drag operation, which fires blur on the webview
+  // even though the user is still interacting with our window. Track those
+  // transitions and also defer the dismiss so focus has time to return.
+  const draggingRef = useRef(false);
+  useEffect(() => {
+    const beginDrag = () => {
+      draggingRef.current = true;
+    };
+    const endDrag = () => {
+      // Clear on the next tick — mouseup fires before focus returns.
+      window.setTimeout(() => {
+        draggingRef.current = false;
+      }, 250);
+    };
+    window.addEventListener("mousedown", beginDrag, true);
+    window.addEventListener("mouseup", endDrag, true);
+    return () => {
+      window.removeEventListener("mousedown", beginDrag, true);
+      window.removeEventListener("mouseup", endDrag, true);
+    };
+  }, []);
   useEffect(() => {
     if (!settings.clickOutsideDismiss) return;
     const onBlur = () => {
       if (phase === "streaming" || phase === "capturing") return;
-      dismiss();
+      if (draggingRef.current) return;
+      // A native window-drag produces a brief blur/focus cycle. Defer the
+      // dismiss long enough that focus can return; only close if it didn't.
+      window.setTimeout(() => {
+        if (document.hasFocus()) return;
+        if (draggingRef.current) return;
+        dismiss();
+      }, 220);
     };
     window.addEventListener("blur", onBlur);
     return () => window.removeEventListener("blur", onBlur);
