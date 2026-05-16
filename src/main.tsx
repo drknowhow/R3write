@@ -54,6 +54,9 @@ type ActionId =
   | "tone:casual"
   | "tone:friendly"
   | "tone:confident"
+  | "prompt:compress"
+  | "prompt:distill"
+  | "prompt:structure"
   | "custom";
 
 const PRIMARY_ACTIONS: { id: ActionId; label: string }[] = [
@@ -68,6 +71,14 @@ const TONE_ACTIONS: { id: ActionId; label: string }[] = [
   { id: "tone:casual", label: "Casual" },
   { id: "tone:friendly", label: "Friendly" },
   { id: "tone:confident", label: "Confident" },
+];
+
+// Rewrite the selection as a prompt for an LLM / agent. Goal: cut tokens
+// without losing instructions, constraints, examples, or named entities.
+const PROMPT_ACTIONS: { id: ActionId; label: string }[] = [
+  { id: "prompt:compress", label: "Compress tokens" },
+  { id: "prompt:distill", label: "Distill intent" },
+  { id: "prompt:structure", label: "Structure for agents" },
 ];
 
 // ---------- LLM client ----------
@@ -149,6 +160,25 @@ function actionInstruction(action: ActionId, customPrompt?: string): string {
       return "Shorten by roughly 30–40% while preserving meaning and key details.";
     case "expand":
       return "Expand with relevant detail and supporting examples while preserving the original tone.";
+    case "prompt:compress":
+      return (
+        "Rewrite the text as an LLM/agent prompt with the smallest possible token count. " +
+        "Preserve every instruction, constraint, requirement, example, named entity, identifier, and quoted string verbatim. " +
+        "Cut filler, hedges, politeness, redundant phrasings, and meta-commentary; merge restatements; prefer imperatives and short clauses. " +
+        "Do not add new requirements, examples, or formatting that wasn't in the original."
+      );
+    case "prompt:distill":
+      return (
+        "Distill the text to the core intent of an LLM/agent prompt. " +
+        "Keep only what is strictly required to produce the desired output: the goal, hard constraints, output format, and any literal values that must appear verbatim. " +
+        "Drop background, motivation, soft preferences, and anything decorative. Output only the rewritten prompt."
+      );
+    case "prompt:structure":
+      return (
+        "Restructure the text as an LLM/agent prompt using these sections, in this order, omitting any section that has no content: " +
+        "`Role` (one line), `Goal` (one sentence), `Inputs`, `Constraints`, `Output format`, `Examples`. " +
+        "Use short imperatives and bullet points. Preserve every original requirement and any literal values verbatim. Do not invent new requirements."
+      );
     case "custom":
       return customPrompt?.trim() || "Rewrite the text.";
     default:
@@ -2449,6 +2479,35 @@ function QuickEdit() {
                     </DropdownMenu.Content>
                   </DropdownMenu.Portal>
                 </DropdownMenu.Root>
+                <DropdownMenu.Root>
+                  <DropdownMenu.Trigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-1 rounded-md bg-bg-subtle px-2 py-1 text-xs font-medium text-fg-muted transition hover:bg-bg-elev hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                      title="Rewrite as a token-efficient LLM/agent prompt"
+                    >
+                      Prompt
+                      <ChevronDown size={11} className="text-fg-subtle" />
+                    </button>
+                  </DropdownMenu.Trigger>
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.Content
+                      align="start"
+                      sideOffset={4}
+                      className="z-50 min-w-[180px] rounded-md border border-border bg-bg-elev p-1 text-sm shadow-md"
+                    >
+                      {PROMPT_ACTIONS.map((a) => (
+                        <DropdownMenu.Item
+                          key={a.id}
+                          onSelect={() => runAction(a.id)}
+                          className="cursor-pointer rounded px-2 py-1.5 text-fg outline-none data-[highlighted]:bg-bg-subtle"
+                        >
+                          {a.label}
+                        </DropdownMenu.Item>
+                      ))}
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Portal>
+                </DropdownMenu.Root>
                 <Chip
                   onClick={() => setShowCustom((v) => !v)}
                   active={showCustom}
@@ -2789,6 +2848,11 @@ function actionLabel(id: ActionId): string {
       return "Custom";
     default:
       if (id.startsWith("tone:")) return `Tone: ${id.slice("tone:".length)}`;
+      if (id.startsWith("prompt:")) {
+        const sub = id.slice("prompt:".length);
+        const pretty = sub.charAt(0).toUpperCase() + sub.slice(1);
+        return `Prompt: ${pretty}`;
+      }
       return id;
   }
 }

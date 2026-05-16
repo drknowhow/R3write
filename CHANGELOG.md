@@ -6,7 +6,26 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-01
+
 ### Added
+- **Prompt rewrite section (token-efficient prompts for LLMs / agents).**
+  New `Prompt` dropdown in the QuickEdit popup, parallel to `Tone`, with
+  three actions tailored at rewriting prompts (not prose):
+  - **Compress tokens** — minimum-token rewrite that preserves every
+    instruction, constraint, example, named entity, identifier, and
+    quoted string verbatim while cutting filler, hedges, and politeness.
+  - **Distill intent** — strips to the goal, hard constraints, output
+    format, and any literals that must appear verbatim.
+  - **Structure for agents** — restructures under `Role` / `Goal` /
+    `Inputs` / `Constraints` / `Output format` / `Examples`, omitting
+    empty sections.
+
+  All three explicitly tell the model not to invent new requirements,
+  which is the failure mode of a naive "shorten" pass on a prompt.
+  Wired through the existing `ActionId` / `actionInstruction` /
+  `actionLabel` plumbing, so the history list pretty-prints them as
+  `Prompt: Compress` / `Prompt: Distill` / `Prompt: Structure`.
 - **API key lock + clear flow.** Settings → cloud → API key now shows a
   locked masked field when a key is already saved (and auto-locks the
   moment Test connection succeeds). Two new buttons sit next to it:

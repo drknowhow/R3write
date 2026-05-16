@@ -12,3 +12,7 @@ src-tauri/gen/
 .c3/
 .claude/
 .mcp.json
+GEMINI.md
+AGENTS.md
+CLAUDE.md
+

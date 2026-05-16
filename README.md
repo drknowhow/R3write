@@ -13,9 +13,17 @@ Local-first inline AI rewrite for Windows. Select text anywhere, press
 - **System-wide quick edit (primary flow)** — select text in any
   Windows app, press `Ctrl+Alt+G`. A small frameless popup appears at
   the cursor with Improve / Fix grammar / Shorten / Expand / Tone /
-  Custom-prompt actions. Streaming preview, Accept / Reject /
+  Prompt / Custom-prompt actions. Streaming preview, Accept / Reject /
   Regenerate. Accept pastes the rewrite into the originating app; the
   original clipboard is preserved.
+  - **Prompt section (token-efficient rewrites for LLMs / agents).**
+    Three actions targeted at rewriting prompts rather than prose:
+    *Compress tokens* (smallest token count, every instruction /
+    constraint / literal preserved verbatim), *Distill intent* (strip
+    to goal + hard constraints + output format), *Structure for agents*
+    (restructure under `Role` / `Goal` / `Inputs` / `Constraints` /
+    `Output format` / `Examples`). All three are explicitly told not to
+    invent new requirements.
   - **Styled rendered output** — when the rewrite is naturally
     structured (lists, multi-paragraph prose, emphasis, headings, code),
     the popup renders Markdown via `marked` + `DOMPurify` so you preview
