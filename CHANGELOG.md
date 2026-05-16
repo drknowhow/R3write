@@ -6,6 +6,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-05-16
+
 ### Added
 - **Multi-provider support.** New providers alongside Ollama: OpenAI, Anthropic, Groq, OpenRouter. Each gets its own keyring entry (`r3write-api-key-<provider>`), so switching providers doesn't blow away the others' keys. Provider catalog drives the Settings picker, the StatusPill label, and the API-key placeholder hint. Legacy `provider: "cloud" | "local"` is migrated to `"ollama-cloud" | "ollama-local"` on load.
 - **Live health pill.** The header status pill now polls the active provider every 60s (`/api/tags` for Ollama, `/v1/models` for OpenAI-style, a 1-token probe for Anthropic) and renders a colored dot — green/amber/red/unknown — with a tooltip and latency. Clicking it opens Settings.
