@@ -6,6 +6,32 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+### Added
+- **Multi-provider support.** New providers alongside Ollama: OpenAI, Anthropic, Groq, OpenRouter. Each gets its own keyring entry (`r3write-api-key-<provider>`), so switching providers doesn't blow away the others' keys. Provider catalog drives the Settings picker, the StatusPill label, and the API-key placeholder hint. Legacy `provider: "cloud" | "local"` is migrated to `"ollama-cloud" | "ollama-local"` on load.
+- **Live health pill.** The header status pill now polls the active provider every 60s (`/api/tags` for Ollama, `/v1/models` for OpenAI-style, a 1-token probe for Anthropic) and renders a colored dot — green/amber/red/unknown — with a tooltip and latency. Clicking it opens Settings.
+- **Repeat-last-action hotkey.** Press the main hotkey with Shift held (default `Ctrl+Alt+Shift+G`) to skip the picker and rerun the last action on the new selection. Custom prompts replay the most recent custom prompt verbatim.
+- **First-run onboarding.** New dialog appears once on first launch with a 4-step walkthrough and a one-click jump to Settings. Tracked via `settings.hasOnboarded`.
+- **Saved templates.** Settings → Templates lets you save named custom prompts. They surface in the popup as a `Templates` dropdown next to `Tone` / `Prompt` / `Custom…`.
+- **Recent custom prompts.** Custom prompts are remembered (most-recent 12) and surface as quick-replay chips beneath the custom-prompt input.
+- **Style guide + protected terms.** Settings → Glossary lets you paste a persistent style guide (appended to every system prompt) and a list of protected terms the model must keep verbatim — names, identifiers, brand strings.
+- **Paste-as toggle.** Popup footer adds a `Plain | MD` toggle: `Plain` strips Markdown on Accept (existing behavior), `MD` pastes Markdown verbatim for destinations like Slack, Discord, or code editors. Choice persists.
+- **Export history.** Settings → Advanced exports the saved history as `.json` or `.md`.
+- **Autostart at login.** Settings → Advanced toggles a Windows per-user autostart entry (`HKCU\…\Run`), wired through new `autostart_set` / `autostart_get` Tauri commands.
+- **Click-outside dismiss.** Window-blur dismisses the popup unless mid-stream. Toggleable in Settings → Advanced; Esc always works.
+- **Expandable Original pane.** Toggle the popup's `Original` between collapsed (~2 lines) and expanded (~5 lines); preference persists.
+- **Token estimate.** Popup shows word count and an approximate token count for the selection.
+- **Persisted UI prefs.** `viewMode` (Rendered/Diff), `lastAction`, `originalExpanded`, and `pasteFormat` are saved across sessions.
+
+### Changed
+- **Bundle split.** `index.html` and a new `quick-edit.html` are emitted as separate Vite multi-page entries (`src/entry-main.tsx`, `src/entry-quick-edit.tsx`). Tauri's quick-edit window now loads its own HTML. Removes the dead-code `TipTap`/`StarterKit` editor from the main bundle entirely (saves ~150 KB minified + cuts cold-start parse cost).
+- **Capture flow.** The Rust hotkey handler now shows the popup *first* (no focus steal) with a `Capturing…` placeholder, then runs the clipboard dance in a background thread. A clipboard-change poll replaces the fixed 180 ms wait, so the visible stall is gone on fast apps. Three events drive the popup: `capture-start`, `captured-text`, `captured-text-repeat`.
+- **Capped follow-up context.** Regenerate / multi-step follow-ups no longer re-send every intermediate assistant turn; the popup now sends `system + first user/assistant + previous assistant + new user` to bound token cost.
+- **Revert (main window).** Replaced the broken hidden-TipTap revert with a clipboard-restore-and-drop: clicking Revert puts the original text on the user's clipboard so they can paste it over the rewrite in the source app, then removes the entry from history.
+- **Provider-aware health probes** in Settings → Test connection: routes through `makeClient(...)` so OpenAI / Anthropic / Groq / OpenRouter are exercised via their real dialects.
+
+### Removed
+- **TipTap, ProseMirror, and `findTextRangeInDoc`** — the hidden in-app editor was unused except by a broken revert path. Dropped from `package.json` and the bundle.
+
 ## [1.1.0] - 2026-05-01
 
 ### Added

@@ -1,7 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ReactDOM from "react-dom/client";
-import { EditorContent, useEditor } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
@@ -9,7 +6,6 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getVersion } from "@tauri-apps/api/app";
 import { open as openUrl } from "@tauri-apps/plugin-shell";
 import { diffWordsWithSpace, type Change } from "diff";
-import type { Node as PMNode } from "@tiptap/pm/model";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import * as Dialog from "@radix-ui/react-dialog";
@@ -135,9 +131,26 @@ function parseFeedback(text: string): ParsedReply {
   return { main, edu, affirm };
 }
 
-function buildSystemPrompt(s: { educational: boolean; affirm: boolean }): string {
-  if (!s.educational && !s.affirm) return BASE_SYSTEM_PROMPT;
-  let p = BASE_SYSTEM_PROMPT + "\n\nAdditional output channels (after the rewrite, in this order):";
+function buildSystemPrompt(s: {
+  educational: boolean;
+  affirm: boolean;
+  styleGuide?: string;
+  protectedTerms?: string;
+}): string {
+  let p = BASE_SYSTEM_PROMPT;
+  const sg = (s.styleGuide || "").trim();
+  if (sg) {
+    p += `\n\nStyle guide (apply to all rewrites unless the user's instruction explicitly overrides it):\n${sg}`;
+  }
+  const terms = parseProtectedTerms(s.protectedTerms || "");
+  if (terms.length > 0) {
+    p +=
+      "\n\nProtected terms — preserve these tokens VERBATIM (case + spelling): " +
+      terms.map((t) => `\`${t}\``).join(", ") +
+      ". Do not translate, pluralize, hyphenate, or otherwise alter them.";
+  }
+  if (!s.educational && !s.affirm) return p;
+  p += "\n\nAdditional output channels (after the rewrite, in this order):";
   if (s.educational) {
     p +=
       `\n- On a NEW LINE write the literal token "${EDU_MARK}" followed by 1–2 short, concrete sentences explaining the most important changes you made and why they improve the writing. Be specific to this rewrite, not generic.`;
@@ -148,6 +161,24 @@ function buildSystemPrompt(s: { educational: boolean; affirm: boolean }): string
   }
   p += "\nNever include these tokens or sections unless these instructions explicitly tell you to.";
   return p;
+}
+
+// Split a comma- or newline-separated list of protected terms. Whitespace is
+// trimmed and empties are dropped. Casing is preserved — the model is told to
+// keep it verbatim.
+function parseProtectedTerms(raw: string): string[] {
+  return raw
+    .split(/[\n,]/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .slice(0, 64);
+}
+
+// Rough token estimate — 4 chars per token is a standard approximation that
+// works well enough for cost/length warnings without pulling in tiktoken.
+function estimateTokens(s: string): number {
+  if (!s) return 0;
+  return Math.max(1, Math.ceil(s.length / 4));
 }
 
 function actionInstruction(action: ActionId, customPrompt?: string): string {
@@ -407,8 +438,46 @@ function prettyKeyCode(code: string): string {
   }
 }
 
+// Catalog of supported model providers. "ollama-cloud" / "ollama-local" are
+// the original two; the rest were added as part of the multi-provider rollout.
+// Legacy "cloud" / "local" values in localStorage are migrated below.
+type Provider =
+  | "ollama-cloud"
+  | "ollama-local"
+  | "openai"
+  | "anthropic"
+  | "groq"
+  | "openrouter";
+
+const PROVIDER_LABELS: Record<Provider, string> = {
+  "ollama-cloud": "Ollama Cloud",
+  "ollama-local": "Local Ollama",
+  "openai": "OpenAI",
+  "anthropic": "Anthropic",
+  "groq": "Groq",
+  "openrouter": "OpenRouter",
+};
+
+const PROVIDER_DEFAULTS: Record<Provider, { baseUrl: string; model: string; needsKey: boolean; keyHint?: string }> = {
+  "ollama-cloud":   { baseUrl: "https://ollama.com",      model: "gemma4:31b-cloud",        needsKey: true,  keyHint: "ollama-…" },
+  "ollama-local":   { baseUrl: "http://localhost:11434",  model: "llama3.2",                needsKey: false },
+  "openai":         { baseUrl: "https://api.openai.com",  model: "gpt-4.1-mini",            needsKey: true,  keyHint: "sk-…" },
+  "anthropic":      { baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-6",     needsKey: true,  keyHint: "sk-ant-…" },
+  "groq":           { baseUrl: "https://api.groq.com",    model: "llama-3.3-70b-versatile", needsKey: true,  keyHint: "gsk_…" },
+  "openrouter":     { baseUrl: "https://openrouter.ai",   model: "anthropic/claude-sonnet-4", needsKey: true, keyHint: "sk-or-…" },
+};
+
+interface SavedTemplate {
+  id: string;
+  name: string;
+  prompt: string;
+}
+
+type ViewMode = "rendered" | "diff";
+type PopupAnchor = "mouse" | "selection" | "center";
+
 interface OllamaSettings {
-  provider: "cloud" | "local";
+  provider: Provider;
   baseUrl: string;
   model: string;
   apiKey: string;
@@ -416,10 +485,24 @@ interface OllamaSettings {
   affirm: boolean;
   hotkey: HotkeyBinding;
   bubbleShortcuts: BubbleShortcuts;
+  // v2 additions — all optional via DEFAULT_SETTINGS so older payloads merge
+  // cleanly. See loadSettings for migration of legacy provider values.
+  viewMode: ViewMode;
+  lastAction: ActionId | null;
+  customPromptHistory: string[];
+  savedTemplates: SavedTemplate[];
+  styleGuide: string;
+  protectedTerms: string;
+  pasteFormat: "plain" | "markdown";
+  clickOutsideDismiss: boolean;
+  autostart: boolean;
+  hasOnboarded: boolean;
+  originalExpanded: boolean;
+  popupAnchor: PopupAnchor;
 }
 
 const DEFAULT_SETTINGS: OllamaSettings = {
-  provider: "cloud",
+  provider: "ollama-cloud",
   baseUrl: "https://ollama.com",
   model: "gemma4:31b-cloud",
   apiKey: "",
@@ -427,6 +510,18 @@ const DEFAULT_SETTINGS: OllamaSettings = {
   affirm: false,
   hotkey: DEFAULT_HOTKEY,
   bubbleShortcuts: DEFAULT_BUBBLE_SHORTCUTS,
+  viewMode: "rendered",
+  lastAction: null,
+  customPromptHistory: [],
+  savedTemplates: [],
+  styleGuide: "",
+  protectedTerms: "",
+  pasteFormat: "plain",
+  clickOutsideDismiss: true,
+  autostart: false,
+  hasOnboarded: false,
+  originalExpanded: false,
+  popupAnchor: "mouse",
 };
 
 const SETTINGS_KEY = "r3write.settings.v1";
@@ -435,8 +530,17 @@ function loadSettings(): OllamaSettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return DEFAULT_SETTINGS;
-    const parsed = JSON.parse(raw) as Partial<OllamaSettings>;
-    const merged: OllamaSettings = { ...DEFAULT_SETTINGS, ...parsed };
+    const parsed = JSON.parse(raw) as Partial<OllamaSettings> & { provider?: string };
+    // Migrate legacy provider names from v1 ("cloud"/"local") into the new
+    // multi-provider taxonomy. Anything else passes through.
+    let provider = parsed.provider as Provider | undefined;
+    if ((parsed.provider as string) === "cloud") provider = "ollama-cloud";
+    else if ((parsed.provider as string) === "local") provider = "ollama-local";
+    const merged: OllamaSettings = {
+      ...DEFAULT_SETTINGS,
+      ...parsed,
+      provider: provider ?? DEFAULT_SETTINGS.provider,
+    };
     // Deep-merge bubbleShortcuts so storing an older partial set doesn't drop
     // any of the keys the runtime expects.
     merged.bubbleShortcuts = {
@@ -456,11 +560,28 @@ function saveSettings(s: OllamaSettings) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(sanitized));
 }
 
-const API_KEY_NAME = "ollama-api-key";
+// Read-modify-write helper for cross-window settings nudges (e.g. the popup
+// persisting viewMode or lastAction without trampling fields it never touched).
+function patchSettings(patch: Partial<OllamaSettings>): OllamaSettings {
+  const current = loadSettings();
+  const next = { ...current, ...patch };
+  saveSettings(next);
+  return next;
+}
 
-async function loadApiKey(): Promise<string> {
+// Each provider gets its own keyring entry so switching providers doesn't
+// drop the user's other keys. Backwards-compat: the legacy entry name was
+// `ollama-api-key`; it now belongs to ollama-cloud.
+function apiKeyEntryName(provider: Provider): string {
+  if (provider === "ollama-cloud") return "ollama-api-key";
+  return `r3write-api-key-${provider}`;
+}
+
+export const API_KEY_NAME = apiKeyEntryName("ollama-cloud");
+
+async function loadApiKey(provider: Provider = "ollama-cloud"): Promise<string> {
   try {
-    const v = await invoke<string | null>("secret_get", { name: API_KEY_NAME });
+    const v = await invoke<string | null>("secret_get", { name: apiKeyEntryName(provider) });
     return v ?? "";
   } catch (e) {
     console.error("[r3write] secret_get failed:", e);
@@ -468,15 +589,23 @@ async function loadApiKey(): Promise<string> {
   }
 }
 
-async function saveApiKey(key: string): Promise<void> {
+async function saveApiKey(provider: Provider, key: string): Promise<void> {
   try {
     if (key) {
-      await invoke("secret_set", { name: API_KEY_NAME, value: key });
+      await invoke("secret_set", { name: apiKeyEntryName(provider), value: key });
     } else {
-      await invoke("secret_delete", { name: API_KEY_NAME });
+      await invoke("secret_delete", { name: apiKeyEntryName(provider) });
     }
   } catch (e) {
     console.error("[r3write] secret persistence failed:", e);
+  }
+}
+
+async function clearApiKeyFor(provider: Provider): Promise<void> {
+  try {
+    await invoke("secret_delete", { name: apiKeyEntryName(provider) });
+  } catch (e) {
+    console.error("[r3write] secret_delete failed:", e);
   }
 }
 
@@ -494,10 +623,57 @@ function originFor(baseUrl: string): string {
   }
 }
 
-function defaultsForProvider(provider: OllamaSettings["provider"]): Pick<OllamaSettings, "baseUrl" | "model"> {
-  return provider === "cloud"
-    ? { baseUrl: "https://ollama.com", model: "gemma4:31b-cloud" }
-    : { baseUrl: "http://localhost:11434", model: "llama3.2" };
+function defaultsForProvider(provider: Provider): Pick<OllamaSettings, "baseUrl" | "model"> {
+  const d = PROVIDER_DEFAULTS[provider];
+  return { baseUrl: d.baseUrl, model: d.model };
+}
+
+// True when the provider speaks the Ollama /api/chat dialect. All Ollama-style
+// servers stream NDJSON of `{ message: { content }, done }`. OpenAI-compatible
+// providers stream SSE (`data: { choices: [...] }`). Anthropic streams a
+// different SSE shape with `content_block_delta` events.
+function isOllamaStyle(p: Provider): boolean {
+  return p === "ollama-cloud" || p === "ollama-local";
+}
+
+function isOpenAIStyle(p: Provider): boolean {
+  return p === "openai" || p === "groq" || p === "openrouter";
+}
+
+// ---------- Streaming clients ----------
+//
+// One client per dialect family; the factory at the bottom picks based on
+// settings.provider. All clients yield raw text deltas; the caller buffers,
+// concatenates, and renders.
+
+// Stream Server-Sent Events as `data: {…}` lines. Yields each parsed object.
+async function* parseSse(
+  body: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+): AsyncIterable<unknown> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    if (signal?.aborted) return;
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, nl).trimEnd();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      try {
+        yield JSON.parse(payload);
+      } catch {
+        // Tolerate keep-alive comments and partial frames; the next chunk
+        // will deliver a complete one.
+      }
+    }
+  }
 }
 
 class OllamaClient implements LLMClient {
@@ -511,12 +687,12 @@ class OllamaClient implements LLMClient {
       "Content-Type": "application/json",
       Origin: originFor(this.settings.baseUrl),
     };
-    if (this.settings.provider === "cloud") {
+    if (this.settings.provider === "ollama-cloud") {
       // Prefer the in-memory key so Settings → Test works with an unsaved
       // draft. Fall back to the keyring so the quick-edit popup — which is
       // a separate window and may have mounted before the key was saved —
       // picks up the current value.
-      const apiKey = this.settings.apiKey || (await loadApiKey());
+      const apiKey = this.settings.apiKey || (await loadApiKey(this.settings.provider));
       if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
     }
     const body = JSON.stringify({
@@ -583,29 +759,220 @@ class OllamaClient implements LLMClient {
   }
 }
 
+// OpenAI, Groq, and OpenRouter all speak the same /v1/chat/completions
+// dialect, just at different base URLs. Same streaming format too.
+class OpenAIStyleClient implements LLMClient {
+  constructor(private settings: OllamaSettings) {}
+
+  private endpoint(): string {
+    const base = this.settings.baseUrl.replace(/\/$/, "");
+    // OpenRouter doesn't include /v1 in its conventional base URL; the others do.
+    if (this.settings.provider === "openrouter") return `${base}/api/v1/chat/completions`;
+    return `${base}/v1/chat/completions`;
+  }
+
+  async *chat(
+    messages: ChatMessage[],
+    opts?: { signal?: AbortSignal },
+  ): AsyncIterable<string> {
+    const apiKey = this.settings.apiKey || (await loadApiKey(this.settings.provider));
+    if (!apiKey) throw new Error(`${PROVIDER_LABELS[this.settings.provider]}: API key not set`);
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      Origin: originFor(this.settings.baseUrl),
+    };
+    if (this.settings.provider === "openrouter") {
+      headers["HTTP-Referer"] = "https://r3write.app";
+      headers["X-Title"] = "R3write";
+    }
+    const res = await tauriFetch(this.endpoint(), {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        model: this.settings.model,
+        stream: true,
+        messages,
+      }),
+      signal: opts?.signal,
+    });
+
+    if (!res.ok || !res.body) {
+      throw new Error(
+        `${PROVIDER_LABELS[this.settings.provider]} HTTP ${res.status}: ${await res.text().catch(() => "")}`,
+      );
+    }
+
+    for await (const event of parseSse(res.body, opts?.signal)) {
+      const obj = event as {
+        choices?: { delta?: { content?: string } }[];
+        error?: { message?: string };
+      };
+      if (obj.error) throw new Error(obj.error.message ?? "Provider error");
+      const piece = obj.choices?.[0]?.delta?.content;
+      if (piece) yield piece;
+    }
+  }
+
+  async *rewrite(input: string, action: ActionId, opts?: RewriteOptions): AsyncIterable<string> {
+    const instruction = actionInstruction(action, opts?.customPrompt);
+    yield* this.chat(
+      [
+        { role: "system", content: buildSystemPrompt(this.settings) },
+        { role: "user", content: `${instruction}\n\nText:\n${input}` },
+      ],
+      { signal: opts?.signal },
+    );
+  }
+}
+
+// Anthropic's Messages API is similar but takes the system prompt out-of-band
+// and streams content_block_delta events.
+class AnthropicClient implements LLMClient {
+  constructor(private settings: OllamaSettings) {}
+
+  async *chat(
+    messages: ChatMessage[],
+    opts?: { signal?: AbortSignal },
+  ): AsyncIterable<string> {
+    const apiKey = this.settings.apiKey || (await loadApiKey(this.settings.provider));
+    if (!apiKey) throw new Error("Anthropic: API key not set");
+    const system = messages.find((m) => m.role === "system")?.content;
+    const turns = messages
+      .filter((m) => m.role !== "system")
+      .map((m) => ({ role: m.role, content: m.content }));
+    const res = await tauriFetch(`${this.settings.baseUrl.replace(/\/$/, "")}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+        Origin: originFor(this.settings.baseUrl),
+      },
+      body: JSON.stringify({
+        model: this.settings.model,
+        max_tokens: 4096,
+        stream: true,
+        system,
+        messages: turns,
+      }),
+      signal: opts?.signal,
+    });
+
+    if (!res.ok || !res.body) {
+      throw new Error(`Anthropic HTTP ${res.status}: ${await res.text().catch(() => "")}`);
+    }
+
+    for await (const event of parseSse(res.body, opts?.signal)) {
+      const obj = event as {
+        type?: string;
+        delta?: { type?: string; text?: string };
+        error?: { message?: string };
+      };
+      if (obj.error) throw new Error(obj.error.message ?? "Anthropic error");
+      if (obj.type === "content_block_delta" && obj.delta?.type === "text_delta") {
+        if (obj.delta.text) yield obj.delta.text;
+      }
+    }
+  }
+
+  async *rewrite(input: string, action: ActionId, opts?: RewriteOptions): AsyncIterable<string> {
+    const instruction = actionInstruction(action, opts?.customPrompt);
+    yield* this.chat(
+      [
+        { role: "system", content: buildSystemPrompt(this.settings) },
+        { role: "user", content: `${instruction}\n\nText:\n${input}` },
+      ],
+      { signal: opts?.signal },
+    );
+  }
+}
+
+function makeClient(settings: OllamaSettings): LLMClient {
+  if (isOpenAIStyle(settings.provider)) return new OpenAIStyleClient(settings);
+  if (settings.provider === "anthropic") return new AnthropicClient(settings);
+  return new OllamaClient(settings);
+}
+
+// Health probe used by the StatusPill in the main window. Returns ms-to-first-
+// response on success; throws on any failure. Designed to be cheap — we don't
+// stream tokens, just confirm the server speaks our dialect and authenticates.
+async function probeProvider(
+  settings: OllamaSettings,
+  signal?: AbortSignal,
+): Promise<number> {
+  const started = performance.now();
+  if (isOllamaStyle(settings.provider)) {
+    const headers: Record<string, string> = { Origin: originFor(settings.baseUrl) };
+    if (settings.provider === "ollama-cloud") {
+      const key = settings.apiKey || (await loadApiKey(settings.provider));
+      if (key) headers["Authorization"] = `Bearer ${key}`;
+    }
+    const res = await tauriFetch(`${settings.baseUrl.replace(/\/$/, "")}/api/tags`, {
+      method: "GET",
+      headers,
+      signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return Math.round(performance.now() - started);
+  }
+  if (settings.provider === "anthropic") {
+    // Anthropic has no free probe; issue a 1-token request and abort on the
+    // first delta. Cheaper than a full rewrite and still confirms auth.
+    const ctrl = new AbortController();
+    const onUserAbort = () => ctrl.abort();
+    signal?.addEventListener("abort", onUserAbort, { once: true });
+    try {
+      const client = makeClient(settings);
+      for await (const chunk of client.chat([{ role: "user", content: "hi" }], { signal: ctrl.signal })) {
+        if (chunk) {
+          ctrl.abort();
+          return Math.round(performance.now() - started);
+        }
+      }
+      throw new Error("empty response");
+    } catch (e) {
+      const aborted = e instanceof DOMException && e.name === "AbortError";
+      if (aborted && performance.now() - started > 0) return Math.round(performance.now() - started);
+      throw e;
+    } finally {
+      signal?.removeEventListener("abort", onUserAbort);
+    }
+  }
+  // OpenAI-style: GET /v1/models is supported by openai/groq/openrouter and
+  // is authenticated, so it doubles as an API-key check.
+  const apiKey = settings.apiKey || (await loadApiKey(settings.provider));
+  if (!apiKey) throw new Error("API key not set");
+  const base = settings.baseUrl.replace(/\/$/, "");
+  const url = settings.provider === "openrouter" ? `${base}/api/v1/models` : `${base}/v1/models`;
+  const res = await tauriFetch(url, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${apiKey}`, Origin: originFor(settings.baseUrl) },
+    signal,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return Math.round(performance.now() - started);
+}
+
 // ---------- App ----------
 
 type Phase = "idle" | "streaming" | "ready" | "error";
 
-function App() {
-  const editor = useEditor({
-    extensions: [StarterKit],
-    content: "",
-  });
-
+export function App() {
   const [settings, setSettings] = useState<OllamaSettings>(() => loadSettings());
   const [showSettings, setShowSettings] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(() => !loadSettings().hasOnboarded);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
 
-  // Hydrate apiKey from Windows Credential Manager. Migrates any legacy
-  // localStorage apiKey into the keyring on first run: if the keyring is empty
-  // we keep the value already loaded into `settings` from useState init, and
-  // the save effect below pushes it to the keyring once hydration completes.
+  // Hydrate apiKey from Windows Credential Manager keyed by the active
+  // provider. Each provider has its own keyring entry so switching providers
+  // doesn't blow away the others' keys.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const fromKeyring = await loadApiKey();
+      const fromKeyring = await loadApiKey(settings.provider);
       if (cancelled) return;
       if (fromKeyring) {
         setSettings((s) => (s.apiKey === fromKeyring ? s : { ...s, apiKey: fromKeyring }));
@@ -615,12 +982,13 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.provider]);
 
   useEffect(() => {
     if (!settingsHydrated) return;
     saveSettings(settings);
-    void saveApiKey(settings.apiKey);
+    void saveApiKey(settings.provider, settings.apiKey);
   }, [settings, settingsHydrated]);
 
   // Apply persisted hotkey on app start. Rust's setup() registers the default
@@ -669,29 +1037,30 @@ function App() {
   }, []);
   const [revertError, setRevertError] = useState<string | null>(null);
 
-  const revert = useCallback(
-    (entry: HistoryEntry) => {
-      if (!editor) return;
-      setRevertError(null);
-      const range = findTextRangeInDoc(editor.state.doc, entry.rewrite);
-      if (!range) {
-        setRevertError(
-          `Couldn't locate the rewrite in the document — it may have been edited or removed.`,
-        );
-        return;
+  // Copy the original text back to the clipboard so the user can paste it
+  // over the rewrite in the source app, then drop the entry from history.
+  // Replaces an earlier flow that tried to mutate a hidden in-app editor —
+  // the editor was never visible and the doc-find always failed.
+  const revert = useCallback((entry: HistoryEntry) => {
+    setRevertError(null);
+    const copy = async () => {
+      try {
+        await navigator.clipboard.writeText(entry.original);
+      } catch {
+        // Tauri's clipboard plugin is the reliable path on Windows.
+        try {
+          await invoke("set_clipboard", { text: entry.original });
+        } catch (e) {
+          setRevertError(
+            "Couldn't copy the original to your clipboard — check Settings or paste manually.",
+          );
+          return;
+        }
       }
-      editor
-        .chain()
-        .focus()
-        .setTextSelection(range)
-        .insertContent(entry.original)
-        .run();
       setHistory((h) => h.filter((x) => x.id !== entry.id));
-    },
-    [editor],
-  );
-
-  if (!editor) return null;
+    };
+    void copy();
+  }, []);
 
   return (
     <Tooltip.Provider delayDuration={250} skipDelayDuration={500}>
@@ -723,7 +1092,7 @@ function App() {
             <h1 className="text-sm font-semibold tracking-tight text-fg">R3write</h1>
           </div>
           <div className="flex items-center gap-2">
-            <StatusPill provider={settings.provider} model={settings.model} />
+            <StatusPill settings={settings} onClick={() => setShowSettings(true)} />
             <ThemeToggle />
             <IconButton
               label="Info"
@@ -773,6 +1142,21 @@ function App() {
           provider={settings.provider}
           hotkey={settings.hotkey}
         />
+        <OnboardingDialog
+          open={showOnboarding}
+          hotkey={settings.hotkey}
+          onOpenSettings={() => {
+            setShowOnboarding(false);
+            patchSettings({ hasOnboarded: true });
+            setSettings((s) => ({ ...s, hasOnboarded: true }));
+            setShowSettings(true);
+          }}
+          onClose={() => {
+            setShowOnboarding(false);
+            patchSettings({ hasOnboarded: true });
+            setSettings((s) => ({ ...s, hasOnboarded: true }));
+          }}
+        />
         <SettingsDialog
           open={showSettings}
           onOpenChange={setShowSettings}
@@ -786,11 +1170,7 @@ function App() {
             // doesn't leave the previous key behind in Windows Credential
             // Manager. The save effect would also do this on next save, but
             // we don't want to depend on that.
-            try {
-              await invoke("secret_delete", { name: API_KEY_NAME });
-            } catch (e) {
-              console.error("[r3write] secret_delete failed:", e);
-            }
+            await clearApiKeyFor(settings.provider);
             setSettings((s) => ({ ...s, apiKey: "" }));
           }}
         />
@@ -814,10 +1194,6 @@ function App() {
           <span>Like R3write? Tip the dev.</span>
           <SupportLinks size="sm" />
         </footer>
-
-        <div className="hidden">
-          <EditorContent editor={editor} />
-        </div>
       </div>
     </Tooltip.Provider>
   );
@@ -911,7 +1287,7 @@ function InfoDialog({
                       <div className="text-fg-subtle">Provider</div>
                       <div className="mt-0.5 flex items-center gap-1.5 text-fg">
                         <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-accent" />
-                        {provider === "cloud" ? "Ollama Cloud" : "Local Ollama"}
+                        {PROVIDER_LABELS[provider] ?? provider}
                       </div>
                     </div>
                     <div className="rounded-md border border-border bg-bg-subtle px-2.5 py-1.5">
@@ -928,6 +1304,101 @@ function InfoDialog({
                   <div className="mt-4 flex items-center justify-between border-t border-border pt-3">
                     <span className="text-[11px] text-fg-subtle">Support R3write</span>
                     <SupportLinks size="xs" />
+                  </div>
+                </motion.div>
+              </Dialog.Content>
+            </>
+          )}
+        </AnimatePresence>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
+function OnboardingDialog({
+  open,
+  hotkey,
+  onOpenSettings,
+  onClose,
+}: {
+  open: boolean;
+  hotkey: HotkeyBinding;
+  onOpenSettings: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog.Root open={open} onOpenChange={(o) => (!o ? onClose() : undefined)}>
+      <Dialog.Portal forceMount>
+        <AnimatePresence>
+          {open && (
+            <>
+              <Dialog.Overlay asChild forceMount>
+                <motion.div
+                  className="fixed inset-0 z-40 bg-black/40"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                />
+              </Dialog.Overlay>
+              <Dialog.Content asChild forceMount>
+                <motion.div
+                  className="fixed left-1/2 top-1/2 z-50 w-[480px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-bg-elev p-6 text-fg shadow-md focus:outline-none"
+                  initial={{ opacity: 0, scale: 0.96 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.96 }}
+                  transition={{ duration: 0.14, ease: "easeOut" }}
+                >
+                  <div className="flex items-center gap-2">
+                    <BrandMark size="lg" />
+                    <Dialog.Title className="text-base font-semibold text-fg">
+                      Welcome to R3write
+                    </Dialog.Title>
+                  </div>
+                  <Dialog.Description className="sr-only">
+                    First-run setup: how the hotkey works and where to configure a model provider.
+                  </Dialog.Description>
+                  <ol className="mt-4 space-y-2 text-sm leading-relaxed text-fg-muted">
+                    <li>
+                      <span className="font-semibold text-fg">1.</span> Select text in any app — Word, Slack, your editor, anywhere.
+                    </li>
+                    <li>
+                      <span className="font-semibold text-fg">2.</span> Press{" "}
+                      <kbd className="rounded border border-border bg-bg-subtle px-1.5 py-0.5 font-mono text-xs text-fg">
+                        {formatHotkey(hotkey)}
+                      </kbd>{" "}
+                      to open the quick-edit popup.
+                    </li>
+                    <li>
+                      <span className="font-semibold text-fg">3.</span> Pick an action — Improve, Fix grammar, Shorten, Expand, a tone, or a custom prompt.
+                    </li>
+                    <li>
+                      <span className="font-semibold text-fg">4.</span> Accept &amp; paste, or dismiss to keep the original.
+                    </li>
+                    <li className="mt-1 text-fg-subtle">
+                      Tip: press the same hotkey with Shift to repeat the last action without the picker.
+                    </li>
+                  </ol>
+                  <div className="mt-4 rounded-md border border-border bg-bg-subtle p-3 text-[12px] text-fg-muted">
+                    <p>
+                      R3write needs a model provider to do the rewriting. You can use a local Ollama install (free, no key) or a cloud provider (Ollama Cloud, OpenAI, Anthropic, Groq, OpenRouter).
+                    </p>
+                  </div>
+                  <div className="mt-5 flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      className="rounded-md border border-border px-3 py-1.5 text-sm text-fg-muted hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    >
+                      Maybe later
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onOpenSettings}
+                      className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                    >
+                      Open Settings
+                    </button>
                   </div>
                 </motion.div>
               </Dialog.Content>
@@ -1048,14 +1519,99 @@ function SupportLinks({ size = "sm" }: { size?: "sm" | "xs" }) {
   );
 }
 
-function StatusPill({ provider, model }: { provider: OllamaSettings["provider"]; model: string }) {
+type Health =
+  | { kind: "unknown" }
+  | { kind: "checking" }
+  | { kind: "ok"; ms: number }
+  | { kind: "err"; message: string };
+
+function StatusPill({
+  settings,
+  onClick,
+}: {
+  settings: OllamaSettings;
+  onClick?: () => void;
+}) {
+  const [health, setHealth] = useState<Health>({ kind: "unknown" });
+  const probeKey = `${settings.provider}|${settings.baseUrl}|${settings.model}|${settings.apiKey ? "k" : ""}`;
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | null = null;
+    const ctrlRef: { current: AbortController | null } = { current: null };
+
+    const tick = async () => {
+      if (cancelled) return;
+      ctrlRef.current?.abort();
+      const ctrl = new AbortController();
+      ctrlRef.current = ctrl;
+      setHealth((h) => (h.kind === "ok" || h.kind === "err" ? { kind: "checking" } : h.kind === "unknown" ? { kind: "checking" } : h));
+      try {
+        const ms = await probeProvider(settings, ctrl.signal);
+        if (!cancelled) setHealth({ kind: "ok", ms });
+      } catch (e) {
+        if (cancelled) return;
+        const msg = e instanceof Error ? e.message : String(e);
+        setHealth({ kind: "err", message: msg });
+      }
+    };
+
+    // First probe after a short delay so settings churn during editing doesn't
+    // hammer the provider. Then refresh every 60s.
+    timer = window.setTimeout(() => {
+      void tick();
+      timer = window.setInterval(tick, 60_000);
+    }, 400) as unknown as number;
+
+    return () => {
+      cancelled = true;
+      ctrlRef.current?.abort();
+      if (timer != null) {
+        window.clearTimeout(timer);
+        window.clearInterval(timer);
+      }
+    };
+  }, [probeKey, settings]);
+
+  const dot =
+    health.kind === "ok"
+      ? "bg-r3w-add-fg"
+      : health.kind === "err"
+        ? "bg-danger"
+        : health.kind === "checking"
+          ? "bg-amber-400"
+          : "bg-fg-subtle";
+  const tip =
+    health.kind === "ok"
+      ? `Connected · ${health.ms} ms`
+      : health.kind === "err"
+        ? `Unreachable: ${health.message}`
+        : health.kind === "checking"
+          ? "Checking provider…"
+          : "Status unknown";
   return (
-    <span className="hidden items-center gap-1.5 rounded-full border border-border bg-bg-elev px-2.5 py-1 text-xs text-fg-muted sm:flex">
-      <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-accent" />
-      <span className="text-fg">{model}</span>
-      <span className="text-fg-subtle">·</span>
-      <span>{provider === "cloud" ? "cloud" : "local"}</span>
-    </span>
+    <Tooltip.Root>
+      <Tooltip.Trigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          aria-label={`Provider status: ${tip}`}
+          className="hidden items-center gap-1.5 rounded-full border border-border bg-bg-elev px-2.5 py-1 text-xs text-fg-muted transition hover:bg-bg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 sm:flex"
+        >
+          <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${dot}`} />
+          <span className="text-fg">{settings.model}</span>
+          <span className="text-fg-subtle">·</span>
+          <span>{PROVIDER_LABELS[settings.provider] ?? settings.provider}</span>
+        </button>
+      </Tooltip.Trigger>
+      <Tooltip.Portal>
+        <Tooltip.Content
+          sideOffset={6}
+          className="max-w-[280px] rounded-md border border-border bg-bg-elev px-2 py-1 text-xs text-fg shadow-md"
+        >
+          {tip}
+        </Tooltip.Content>
+      </Tooltip.Portal>
+    </Tooltip.Root>
   );
 }
 
@@ -1150,8 +1706,11 @@ function SettingsDialog({
   const testAbortRef = useRef<AbortController | null>(null);
   const testCancelledRef = useRef(false);
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
-  type SettingsTab = "model" | "hotkey" | "feedback" | "support";
+  type SettingsTab = "model" | "hotkey" | "feedback" | "templates" | "glossary" | "advanced" | "support";
   const [tab, setTab] = useState<SettingsTab>("model");
+  const [newTemplateName, setNewTemplateName] = useState("");
+  const [newTemplatePrompt, setNewTemplatePrompt] = useState("");
+  const [autostartChecked, setAutostartChecked] = useState<boolean | null>(null);
   type LocalStatus =
     | { kind: "idle" }
     | { kind: "loading" }
@@ -1176,12 +1735,21 @@ function SettingsDialog({
     }
   }, [open, settings]);
 
+  // Read the OS-level autostart flag on open. Reflects whatever the registry
+  // says, not the (possibly out-of-date) localStorage value.
+  useEffect(() => {
+    if (!open) return;
+    void invoke<boolean>("autostart_get")
+      .then((v) => setAutostartChecked(v))
+      .catch(() => setAutostartChecked(null));
+  }, [open]);
+
   // When Local Ollama is selected (or the URL changes), poke /api/tags to see if
   // it's running and what models are pulled. Cloud is skipped — its tags endpoint
   // is gated and not useful in this context.
   useEffect(() => {
     if (!open) return;
-    if (draft.provider !== "local") {
+    if (draft.provider !== "ollama-local") {
       setLocalStatus({ kind: "idle" });
       return;
     }
@@ -1268,7 +1836,7 @@ function SettingsDialog({
     let receivedAny = false;
     let firstTokenAt = 0;
     try {
-      const client = new OllamaClient(draft);
+      const client = makeClient(draft);
       for await (const piece of client.chat(
         [{ role: "user", content: "ping" }],
         { signal: ctrl.signal },
@@ -1348,6 +1916,9 @@ function SettingsDialog({
                         { id: "model", label: "Model" },
                         { id: "hotkey", label: "Hotkey" },
                         { id: "feedback", label: "Feedback" },
+                        { id: "templates", label: "Templates" },
+                        { id: "glossary", label: "Glossary" },
+                        { id: "advanced", label: "Advanced" },
                         { id: "support", label: "Support" },
                       ] as { id: SettingsTab; label: string }[]
                     ).map((t) => (
@@ -1384,13 +1955,25 @@ function SettingsDialog({
                     <select
                       value={draft.provider}
                       onChange={(e) => {
-                        const provider = e.target.value as OllamaSettings["provider"];
-                        update({ provider, ...defaultsForProvider(provider) });
+                        const provider = e.target.value as Provider;
+                        // Provider switch clears the in-memory API key — it'll
+                        // be re-hydrated from the keyring for the new provider.
+                        update({ provider, apiKey: "", ...defaultsForProvider(provider) });
+                        setApiKeyLocked(false);
+                        void loadApiKey(provider).then((k) => {
+                          if (k) {
+                            update({ apiKey: k });
+                            setApiKeyLocked(true);
+                          }
+                        });
                       }}
                       className={inputCls}
                     >
-                      <option value="cloud">Ollama Cloud</option>
-                      <option value="local">Local Ollama</option>
+                      {(Object.keys(PROVIDER_LABELS) as Provider[]).map((p) => (
+                        <option key={p} value={p}>
+                          {PROVIDER_LABELS[p]}
+                        </option>
+                      ))}
                     </select>
                   </Field>
 
@@ -1421,12 +2004,12 @@ function SettingsDialog({
                       </button>
                     </div>
                     <p className="mt-1 text-[11px] text-fg-subtle">
-                      Default for {draft.provider === "cloud" ? "Ollama Cloud" : "Local Ollama"}:{" "}
+                      Default for {PROVIDER_LABELS[draft.provider]}:{" "}
                       <span className="font-mono text-fg-muted">
                         {defaultsForProvider(draft.provider).model}
                       </span>
                     </p>
-                    {draft.provider === "local" && (
+                    {draft.provider === "ollama-local" && (
                       <div className="mt-2 rounded-md border border-border bg-bg-subtle p-2 text-[11px]">
                         {localStatus.kind === "loading" && (
                           <div className="flex items-center gap-1.5 text-fg-muted">
@@ -1479,7 +2062,7 @@ function SettingsDialog({
                     )}
                   </Field>
 
-                  {draft.provider === "cloud" && (
+                  {PROVIDER_DEFAULTS[draft.provider].needsKey && (
                     <Field label="API key">
                       {apiKeyLocked ? (
                         <div className="flex items-center gap-2">
@@ -1540,7 +2123,7 @@ function SettingsDialog({
                           type="password"
                           value={draft.apiKey}
                           onChange={(e) => update({ apiKey: e.target.value })}
-                          placeholder="ollama-…"
+                          placeholder={PROVIDER_DEFAULTS[draft.provider].keyHint ?? "key"}
                           className={inputCls}
                           autoFocus
                         />
@@ -1667,6 +2250,155 @@ function SettingsDialog({
                       />
                     </div>
                   </Field>
+                    </div>
+                  )}
+
+                  {tab === "templates" && (
+                    <div role="tabpanel" className="flex flex-col gap-3">
+                      <p className="text-[11px] text-fg-muted">
+                        Saved prompts appear in the quick-edit popup as a Templates dropdown. Useful for prompts you run often — voice/tone presets, brand-specific instructions, etc.
+                      </p>
+                      <div className="rounded-md border border-border bg-bg-subtle p-3">
+                        <div className="flex flex-col gap-2">
+                          <input
+                            value={newTemplateName}
+                            onChange={(e) => setNewTemplateName(e.target.value)}
+                            placeholder="Name (e.g. Marketing voice)"
+                            className={inputCls}
+                          />
+                          <textarea
+                            value={newTemplatePrompt}
+                            onChange={(e) => setNewTemplatePrompt(e.target.value)}
+                            placeholder="Prompt text — describe how to rewrite the selection…"
+                            rows={3}
+                            className={`${inputCls} resize-y`}
+                          />
+                          <button
+                            type="button"
+                            disabled={!newTemplateName.trim() || !newTemplatePrompt.trim()}
+                            onClick={() => {
+                              const t: SavedTemplate = {
+                                id: cryptoId(),
+                                name: newTemplateName.trim(),
+                                prompt: newTemplatePrompt.trim(),
+                              };
+                              update({ savedTemplates: [...draft.savedTemplates, t] });
+                              setNewTemplateName("");
+                              setNewTemplatePrompt("");
+                            }}
+                            className="self-end rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50"
+                          >
+                            Add template
+                          </button>
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        {draft.savedTemplates.length === 0 ? (
+                          <p className="text-[11px] text-fg-subtle italic">No templates yet.</p>
+                        ) : (
+                          draft.savedTemplates.map((t) => (
+                            <div
+                              key={t.id}
+                              className="rounded-md border border-border bg-bg-subtle p-2 text-xs"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0 flex-1">
+                                  <div className="truncate font-medium text-fg">{t.name}</div>
+                                  <div className="mt-0.5 break-words text-fg-muted">{t.prompt}</div>
+                                </div>
+                                <button
+                                  type="button"
+                                  aria-label={`Delete ${t.name}`}
+                                  onClick={() =>
+                                    update({
+                                      savedTemplates: draft.savedTemplates.filter((x) => x.id !== t.id),
+                                    })
+                                  }
+                                  className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-fg-muted hover:bg-bg hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                                >
+                                  <Trash2 size={12} />
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {tab === "glossary" && (
+                    <div role="tabpanel" className="flex flex-col gap-3">
+                      <Field label="Style guide">
+                        <textarea
+                          value={draft.styleGuide}
+                          onChange={(e) => update({ styleGuide: e.target.value })}
+                          rows={5}
+                          placeholder={`e.g.\nAlways use "we", never "I".\nAvoid em dashes.\nKeep paragraphs under 3 sentences.`}
+                          className={`${inputCls} resize-y font-mono text-[12px]`}
+                        />
+                        <p className="mt-1 text-[11px] text-fg-subtle">
+                          Appended to the system prompt on every rewrite. Keep it under ~200 words for best results.
+                        </p>
+                      </Field>
+                      <Field label="Protected terms">
+                        <textarea
+                          value={draft.protectedTerms}
+                          onChange={(e) => update({ protectedTerms: e.target.value })}
+                          rows={3}
+                          placeholder="One per line or comma-separated, e.g.\nR3write, drknowhow, Tauri"
+                          className={`${inputCls} resize-y`}
+                        />
+                        <p className="mt-1 text-[11px] text-fg-subtle">
+                          Names, identifiers, or brand terms the model must keep verbatim — same case, same spelling, no pluralization.
+                        </p>
+                      </Field>
+                    </div>
+                  )}
+
+                  {tab === "advanced" && (
+                    <div role="tabpanel" className="flex flex-col gap-3">
+                      <ToggleRow
+                        label="Click outside to dismiss popup"
+                        hint="Close the quick-edit window when you click into another app. Esc always works."
+                        checked={draft.clickOutsideDismiss}
+                        onChange={(v) => update({ clickOutsideDismiss: v })}
+                      />
+                      <ToggleRow
+                        label="Start R3write at login"
+                        hint="Registers R3write in Windows' per-user autostart list. The tray stays available immediately on sign-in."
+                        checked={autostartChecked ?? draft.autostart}
+                        onChange={(v) => {
+                          setAutostartChecked(v);
+                          update({ autostart: v });
+                          void invoke("autostart_set", { enable: v }).catch((e) => {
+                            console.error("[r3write] autostart_set failed:", e);
+                          });
+                        }}
+                      />
+                      <div className="mt-1 rounded-md border border-border bg-bg-subtle p-3 text-[12px] text-fg-muted">
+                        <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">
+                          Export history
+                        </div>
+                        <p className="mb-2">
+                          Download the saved rewrite history. Each entry includes the original, the rewrite, the action, and a timestamp.
+                        </p>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => exportHistory("json")}
+                            className="rounded-md border border-border bg-bg px-3 py-1.5 text-xs text-fg-muted transition hover:bg-bg-elev hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                          >
+                            Export JSON
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => exportHistory("markdown")}
+                            className="rounded-md border border-border bg-bg px-3 py-1.5 text-xs text-fg-muted transition hover:bg-bg-elev hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                          >
+                            Export Markdown
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   )}
 
@@ -2019,8 +2751,6 @@ function Chip({
   );
 }
 
-type ViewMode = "rendered" | "diff";
-
 const TurnItem = React.memo(
   function TurnItem({
     turn,
@@ -2093,25 +2823,37 @@ const TurnItem = React.memo(
     prev.originalText === next.originalText,
 );
 
-function QuickEdit() {
+export function QuickEdit() {
   useThemeFollower();
   const [settings, setSettings] = useState<OllamaSettings>(() => loadSettings());
-  const clientRef = useRef<OllamaClient>(new OllamaClient(settings));
+  // Only the request-shaping fields matter for the client; theming/hotkey
+  // changes shouldn't tear it down mid-stream. The client itself is stateless
+  // outside the bound settings, so a ref keeps the streaming loop reading the
+  // latest snapshot without restarting on unrelated settings churn.
+  const clientKey = `${settings.provider}|${settings.baseUrl}|${settings.model}|${settings.apiKey ? "k" : ""}`;
+  const clientRef = useRef<LLMClient>(makeClient(settings));
   useEffect(() => {
-    clientRef.current = new OllamaClient(settings);
-  }, [settings]);
+    clientRef.current = makeClient(settings);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientKey, settings.educational, settings.affirm, settings.styleGuide, settings.protectedTerms]);
 
   const [input, setInput] = useState<string>("");
   const [thread, setThread] = useState<Turn[]>([]);
-  const [phase, setPhase] = useState<Phase>("idle");
+  // "capturing" — popup just appeared; clipboard capture is in flight.
+  // "idle" — capture done, no rewrite started yet (action picker visible).
+  // Other phases match the streaming pipeline below.
+  const [phase, setPhase] = useState<Phase | "capturing">("capturing");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [firstAction, setFirstAction] = useState<ActionId | null>(null);
   const [showCustom, setShowCustom] = useState(false);
   const [customDraft, setCustomDraft] = useState("");
   const [followUp, setFollowUp] = useState("");
-  const [viewMode, setViewMode] = useState<ViewMode>("rendered");
+  const [viewMode, setViewMode] = useState<ViewMode>(() => loadSettings().viewMode);
+  const [pasteFormat, setPasteFormat] = useState<"plain" | "markdown">(() => loadSettings().pasteFormat);
   const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null);
   const [firstTokenMs, setFirstTokenMs] = useState<number | null>(null);
+  const [originalExpanded, setOriginalExpanded] = useState<boolean>(() => loadSettings().originalExpanded);
+  const [pendingRepeat, setPendingRepeat] = useState<ActionId | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const threadScrollRef = useRef<HTMLDivElement | null>(null);
   const streamingNodeRef = useRef<HTMLDivElement>(null!);
@@ -2123,28 +2865,50 @@ function QuickEdit() {
     }
   }, [thread]);
 
+  // Three event flows from Rust:
+  //   capture-start          — popup just appeared, clipboard capture in flight
+  //   captured-text          — main hotkey: render the action picker
+  //   captured-text-repeat   — repeat hotkey: auto-run last action with no UI
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<string>("captured-text", (event) => {
+    const unlisteners: (() => void)[] = [];
+    const resetForCapture = () => {
       abortRef.current?.abort();
       streamingBufferRef.current = "";
-      setSettings(loadSettings());
-      setInput(event.payload);
+      const fresh = loadSettings();
+      setSettings(fresh);
+      setInput("");
       setThread([]);
-      setPhase("idle");
+      setPhase("capturing");
       setErrorMsg(null);
       setFirstAction(null);
       setShowCustom(false);
       setCustomDraft("");
       setFollowUp("");
-      setViewMode("rendered");
+      setViewMode(fresh.viewMode);
+      setPasteFormat(fresh.pasteFormat);
+      setOriginalExpanded(fresh.originalExpanded);
       setStreamStartedAt(null);
       setFirstTokenMs(null);
-    }).then((u) => {
-      unlisten = u;
-    });
+    };
+    void listen<boolean>("capture-start", () => {
+      resetForCapture();
+    }).then((u) => unlisteners.push(u));
+    void listen<string>("captured-text", (event) => {
+      setInput(event.payload);
+      setPhase("idle");
+    }).then((u) => unlisteners.push(u));
+    void listen<string>("captured-text-repeat", (event) => {
+      setInput(event.payload);
+      const last = loadSettings().lastAction;
+      if (last && event.payload.trim()) {
+        setPendingRepeat(last);
+        setPhase("idle");
+      } else {
+        setPhase("idle");
+      }
+    }).then((u) => unlisteners.push(u));
     return () => {
-      unlisten?.();
+      for (const u of unlisteners) u();
     };
   }, []);
 
@@ -2152,6 +2916,19 @@ function QuickEdit() {
     abortRef.current?.abort();
     void invoke("dismiss_popup");
   }, []);
+
+  // Click-outside dismiss: bind to window blur when the user has opted in.
+  // The popup is alwaysOnTop, so blur means the user clicked back into the
+  // source app (or anywhere else).
+  useEffect(() => {
+    if (!settings.clickOutsideDismiss) return;
+    const onBlur = () => {
+      if (phase === "streaming" || phase === "capturing") return;
+      dismiss();
+    };
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, [settings.clickOutsideDismiss, phase, dismiss]);
 
   // Stop the in-flight stream WITHOUT dismissing the popup. Commits whatever
   // tokens already arrived to thread state so the user can read / accept /
@@ -2185,12 +2962,35 @@ function QuickEdit() {
     streamingBufferRef.current = "";
     setThread(next);
 
+    // Context budget: send system + the FIRST turn (the actual user selection +
+    // initial action) + the most recent assistant + the new user turn. Older
+    // intermediate follow-ups get dropped so regenerate / multi-step refinements
+    // don't compound token cost. The model still sees the original source.
     const messages: ChatMessage[] = [
       { role: "system", content: buildSystemPrompt(settings) },
     ];
-    for (const t of next) {
-      messages.push({ role: "user", content: t.user });
-      if (t.assistant) messages.push({ role: "assistant", content: t.assistant });
+    if (next.length === 0) {
+      // Nothing to send — guard against an accidental empty call.
+      return;
+    }
+    messages.push({ role: "user", content: next[0].user });
+    if (next[0].assistant && next.length > 1) {
+      messages.push({ role: "assistant", content: next[0].assistant });
+    }
+    if (next.length > 2) {
+      const prev = next[next.length - 2];
+      if (prev.assistant) {
+        messages.push({ role: "assistant", content: prev.assistant });
+      }
+    }
+    if (next.length > 1) {
+      const last = next[next.length - 1];
+      messages.push({ role: "user", content: last.user });
+      if (last.assistant) {
+        // Streaming target turn — assistant slot is empty when calling, but if
+        // we ever pass an in-progress turn back through, surface it.
+        messages.push({ role: "assistant", content: last.assistant });
+      }
     }
 
     let rafScheduled = false;
@@ -2245,12 +3045,35 @@ function QuickEdit() {
       setFirstAction(action);
       setShowCustom(false);
       setCustomDraft("");
+      // Persist the last action (and the custom prompt, if used) so the
+      // repeat hotkey and the popup's prompt-history dropdown can recall it.
+      const patch: Partial<OllamaSettings> = { lastAction: action };
+      if (action === "custom" && customPromptOverride && customPromptOverride.trim()) {
+        const current = loadSettings().customPromptHistory;
+        const next = [customPromptOverride.trim(), ...current.filter((p) => p !== customPromptOverride.trim())].slice(0, 12);
+        patch.customPromptHistory = next;
+      }
+      patchSettings(patch);
       void streamInto([
         { id: cryptoId(), user: `${instruction}\n\nText:\n${input}`, assistant: "", userLabel },
       ]);
     },
     [input, streamInto],
   );
+
+  // Auto-run when the repeat hotkey fires AFTER the captured text has loaded.
+  // We defer until `input` is populated to avoid the "no selection → run"
+  // race with the async capture flow.
+  useEffect(() => {
+    if (!pendingRepeat) return;
+    if (!input.trim()) return;
+    const action = pendingRepeat;
+    setPendingRepeat(null);
+    // If the last action was a custom prompt, replay the most recent one.
+    const custom =
+      action === "custom" ? loadSettings().customPromptHistory[0] : undefined;
+    runAction(action, custom);
+  }, [pendingRepeat, input, runAction]);
 
   const sendFollowUp = useCallback(
     (user: string, userLabel: string) => {
@@ -2277,7 +3100,10 @@ function QuickEdit() {
     const last = thread[thread.length - 1];
     if (!last?.assistant.trim() || !firstAction) return;
     const main = parseFeedback(last.assistant).main || last.assistant;
-    const pasteText = markdownToPlain(main) || main;
+    // Paste-format toggle: "plain" strips markdown, "markdown" leaves it as-is
+    // so destinations like Slack, Discord, or VS Code render structure intact.
+    const pasteText =
+      pasteFormat === "markdown" ? main : markdownToPlain(main) || main;
     const entry: HistoryEntry = {
       id: cryptoId(),
       timestamp: Date.now(),
@@ -2291,7 +3117,7 @@ function QuickEdit() {
       console.error("[r3write] history emitTo(main) failed:", e);
     }
     void invoke("accept_rewrite", { text: pasteText });
-  }, [thread, input, firstAction]);
+  }, [thread, input, firstAction, pasteFormat]);
 
   // Keyboard:
   // Keyboard map driven by settings.bubbleShortcuts (with Esc always dismissing).
@@ -2425,11 +3251,44 @@ function QuickEdit() {
 
         <div className="flex flex-1 flex-col gap-2 overflow-hidden p-3">
           <div className="space-y-0.5">
-            <div className="text-[10px] font-medium uppercase tracking-wide text-fg-subtle">
-              Original
+            <div className="flex items-center justify-between">
+              <div className="text-[10px] font-medium uppercase tracking-wide text-fg-subtle">
+                Original
+              </div>
+              <div className="flex items-center gap-2 text-[10px] text-fg-subtle">
+                {input && (
+                  <span className="tabular-nums">
+                    {input.split(/\s+/).filter(Boolean).length}w · ≈{estimateTokens(input)} tok
+                  </span>
+                )}
+                {input && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = !originalExpanded;
+                      setOriginalExpanded(next);
+                      patchSettings({ originalExpanded: next });
+                    }}
+                    className="rounded px-1 py-0.5 hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  >
+                    {originalExpanded ? "Collapse" : "Expand"}
+                  </button>
+                )}
+              </div>
             </div>
-            <div className="max-h-16 overflow-y-auto rounded-md border border-border bg-bg-subtle px-2 py-1 text-xs text-fg-muted">
-              {input || (
+            <div
+              className={`overflow-y-auto rounded-md border border-border bg-bg-subtle px-2 py-1 text-xs text-fg-muted ${
+                originalExpanded ? "max-h-40" : "max-h-16"
+              }`}
+            >
+              {phase === "capturing" && !input ? (
+                <span className="flex items-center gap-1.5 italic text-fg-subtle">
+                  <Loader2 size={11} className="animate-spin" />
+                  Capturing selection…
+                </span>
+              ) : input ? (
+                <span className="whitespace-pre-wrap break-words">{input}</span>
+              ) : (
                 <span className="italic text-fg-subtle">
                   Select text in any app, then press {formatHotkey(settings.hotkey)}.
                 </span>
@@ -2508,6 +3367,38 @@ function QuickEdit() {
                     </DropdownMenu.Content>
                   </DropdownMenu.Portal>
                 </DropdownMenu.Root>
+                {settings.savedTemplates.length > 0 && (
+                  <DropdownMenu.Root>
+                    <DropdownMenu.Trigger asChild>
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 rounded-md bg-bg-subtle px-2 py-1 text-xs font-medium text-fg-muted transition hover:bg-bg-elev hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                        title="Run a saved custom prompt"
+                      >
+                        Templates
+                        <ChevronDown size={11} className="text-fg-subtle" />
+                      </button>
+                    </DropdownMenu.Trigger>
+                    <DropdownMenu.Portal>
+                      <DropdownMenu.Content
+                        align="start"
+                        sideOffset={4}
+                        className="z-50 min-w-[200px] max-w-[320px] rounded-md border border-border bg-bg-elev p-1 text-sm shadow-md"
+                      >
+                        {settings.savedTemplates.map((t) => (
+                          <DropdownMenu.Item
+                            key={t.id}
+                            onSelect={() => runAction("custom", t.prompt)}
+                            className="cursor-pointer rounded px-2 py-1.5 text-fg outline-none data-[highlighted]:bg-bg-subtle"
+                          >
+                            <div className="truncate font-medium">{t.name}</div>
+                            <div className="truncate text-[10px] text-fg-subtle">{t.prompt}</div>
+                          </DropdownMenu.Item>
+                        ))}
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Portal>
+                  </DropdownMenu.Root>
+                )}
                 <Chip
                   onClick={() => setShowCustom((v) => !v)}
                   active={showCustom}
@@ -2517,29 +3408,47 @@ function QuickEdit() {
                 </Chip>
               </div>
               {showCustom && (
-                <div className="flex gap-1">
-                  <input
-                    autoFocus
-                    value={customDraft}
-                    onChange={(e) => setCustomDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && customDraft.trim()) {
-                        runAction("custom", customDraft.trim());
-                      } else if (e.key === "Escape") {
-                        e.stopPropagation();
-                        setShowCustom(false);
-                      }
-                    }}
-                    placeholder="Describe the rewrite…"
-                    className="flex-1 rounded-md border border-border bg-bg px-2 py-1 text-sm text-fg outline-none placeholder:text-fg-subtle focus:border-accent focus:ring-2 focus:ring-accent/40"
-                  />
-                  <Chip
-                    onClick={() => customDraft.trim() && runAction("custom", customDraft.trim())}
-                    primary
-                    disabled={!customDraft.trim()}
-                  >
-                    Run
-                  </Chip>
+                <div className="flex flex-col gap-1">
+                  <div className="flex gap-1">
+                    <input
+                      autoFocus
+                      value={customDraft}
+                      onChange={(e) => setCustomDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && customDraft.trim()) {
+                          runAction("custom", customDraft.trim());
+                        } else if (e.key === "Escape") {
+                          e.stopPropagation();
+                          setShowCustom(false);
+                        }
+                      }}
+                      placeholder="Describe the rewrite…"
+                      className="flex-1 rounded-md border border-border bg-bg px-2 py-1 text-sm text-fg outline-none placeholder:text-fg-subtle focus:border-accent focus:ring-2 focus:ring-accent/40"
+                    />
+                    <Chip
+                      onClick={() => customDraft.trim() && runAction("custom", customDraft.trim())}
+                      primary
+                      disabled={!customDraft.trim()}
+                    >
+                      Run
+                    </Chip>
+                  </div>
+                  {settings.customPromptHistory.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      <span className="text-[10px] text-fg-subtle">Recent:</span>
+                      {settings.customPromptHistory.slice(0, 6).map((p) => (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => runAction("custom", p)}
+                          title={p}
+                          className="max-w-[160px] truncate rounded-md border border-border bg-bg px-2 py-0.5 text-[10px] text-fg-muted transition hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                        >
+                          {p}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -2596,7 +3505,10 @@ function QuickEdit() {
                             type="button"
                             role="tab"
                             aria-selected={viewMode === m}
-                            onClick={() => setViewMode(m)}
+                            onClick={() => {
+                              setViewMode(m);
+                              patchSettings({ viewMode: m });
+                            }}
                             className={
                               viewMode === m
                                 ? "rounded px-2 py-0.5 text-[11px] font-medium text-fg bg-bg-elev shadow-[var(--shadow-sm)]"
@@ -2751,8 +3663,31 @@ function QuickEdit() {
             </>
           )}
         </div>
-        <div className="flex h-7 shrink-0 items-center justify-between border-t border-border bg-bg-elev/80 pl-3 pr-5 text-[10px] text-fg-subtle">
-          <span>Support R3write</span>
+        <div className="flex h-7 shrink-0 items-center justify-between gap-2 border-t border-border bg-bg-elev/80 pl-3 pr-5 text-[10px] text-fg-subtle">
+          <div className="flex items-center gap-2">
+            <span className="hidden sm:inline">Paste as</span>
+            <div role="radiogroup" aria-label="Paste format" className="flex gap-0.5 rounded-md bg-bg-subtle p-0.5">
+              {(["plain", "markdown"] as const).map((fmt) => (
+                <button
+                  key={fmt}
+                  type="button"
+                  role="radio"
+                  aria-checked={pasteFormat === fmt}
+                  onClick={() => {
+                    setPasteFormat(fmt);
+                    patchSettings({ pasteFormat: fmt });
+                  }}
+                  className={
+                    pasteFormat === fmt
+                      ? "rounded px-1.5 py-0.5 text-[10px] font-medium text-fg bg-bg-elev"
+                      : "rounded px-1.5 py-0.5 text-[10px] font-medium text-fg-subtle hover:text-fg"
+                  }
+                >
+                  {fmt === "plain" ? "Plain" : "MD"}
+                </button>
+              ))}
+            </div>
+          </div>
           <SupportLinks size="xs" />
         </div>
       </div>
@@ -2826,6 +3761,56 @@ function clearHistoryStorage() {
   } catch {}
 }
 
+// Download the saved history as JSON or Markdown. The browser context is
+// already a Tauri webview, so a regular <a download> kicks off the OS save
+// dialog through the standard webview pathway — no special permission needed.
+function exportHistory(format: "json" | "markdown") {
+  const entries = loadHistory();
+  let payload: string;
+  let mime: string;
+  let ext: string;
+  if (format === "json") {
+    payload = JSON.stringify(entries, null, 2);
+    mime = "application/json";
+    ext = "json";
+  } else {
+    const lines: string[] = [
+      "# R3write history export",
+      "",
+      `_Exported ${new Date().toISOString()}_`,
+      "",
+    ];
+    for (const e of entries) {
+      lines.push(`## ${actionLabel(e.action)} · ${new Date(e.timestamp).toLocaleString()}`);
+      lines.push("");
+      lines.push("**Original**");
+      lines.push("");
+      lines.push("```");
+      lines.push(e.original);
+      lines.push("```");
+      lines.push("");
+      lines.push("**Rewrite**");
+      lines.push("");
+      lines.push(e.rewrite);
+      lines.push("");
+      lines.push("---");
+      lines.push("");
+    }
+    payload = lines.join("\n");
+    mime = "text/markdown";
+    ext = "md";
+  }
+  const blob = new Blob([payload], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `r3write-history-${new Date().toISOString().slice(0, 10)}.${ext}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 interface HistoryEntry {
   id: string;
   timestamp: number;
@@ -2873,27 +3858,6 @@ function cryptoId(): string {
     return crypto.randomUUID();
   }
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
-
-// Walks the ProseMirror doc and finds `needle` in the concatenated text.
-// Returns the PM range, or null if missing or non-unique.
-function findTextRangeInDoc(doc: PMNode, needle: string): { from: number; to: number } | null {
-  if (!needle) return null;
-  const positions: number[] = [];
-  let text = "";
-  doc.descendants((node, pos) => {
-    if (node.isText && node.text) {
-      for (let i = 0; i < node.text.length; i++) positions.push(pos + i);
-      text += node.text;
-    }
-    return true;
-  });
-  const idx = text.indexOf(needle);
-  if (idx === -1) return null;
-  if (text.indexOf(needle, idx + 1) !== -1) return null;
-  const from = positions[idx];
-  const to = positions[idx + needle.length - 1] + 1;
-  return { from, to };
 }
 
 const HistoryRow = React.memo(
@@ -3046,18 +4010,8 @@ function HistoryListPanel({
   );
 }
 
-// ---------- Window routing ----------
-
-function getWindowLabel(): string {
-  try {
-    return getCurrentWebviewWindow().label;
-  } catch {
-    return "main";
-  }
-}
-
-const root = ReactDOM.createRoot(document.getElementById("root")!);
-const label = getWindowLabel();
-root.render(
-  <React.StrictMode>{label === "quick-edit" ? <QuickEdit /> : <App />}</React.StrictMode>,
-);
+// Entry render is owned by ./entry-main.tsx and ./entry-quick-edit.tsx; this
+// module just exports the App and QuickEdit components. Splitting entries lets
+// Vite produce two bundles: the popup no longer drags in the main window's
+// SettingsDialog / history UI, and the main window no longer drags in the
+// streaming-popup machinery.

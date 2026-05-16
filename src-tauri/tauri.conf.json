@@ -26,6 +26,7 @@
       {
         "label": "quick-edit",
         "title": "R3write quick edit",
+        "url": "quick-edit.html",
         "width": 780,
         "height": 560,
         "minWidth": 480,

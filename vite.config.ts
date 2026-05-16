@@ -1,6 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
 // Tauri uses a fixed dev port and disables HMR overlay for desktop UX.
 export default defineConfig({
@@ -13,10 +17,18 @@ export default defineConfig({
   envPrefix: ["VITE_", "TAURI_"],
   build: {
     rollupOptions: {
+      // Multi-page build: each window loads its own HTML + bundle. Vite
+      // tree-shakes from each entry, so the popup ships without the main
+      // window's SettingsDialog/HistoryList tree, and vice versa. Shared
+      // code (LLM clients, settings, theme, primitives) lands in the
+      // common chunks below.
+      input: {
+        main: resolve(__dirname, "index.html"),
+        "quick-edit": resolve(__dirname, "quick-edit.html"),
+      },
       output: {
         manualChunks(id) {
           if (id.includes("node_modules")) {
-            if (id.includes("@tiptap") || id.includes("prosemirror-")) return "tiptap";
             if (id.includes("/marked/") || id.includes("/dompurify/") || id.includes("/diff/"))
               return "markdown";
             if (id.includes("@radix-ui")) return "radix";

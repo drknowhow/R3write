@@ -18,9 +18,18 @@ use tauri_plugin_shell::ShellExt;
 struct OriginalClipboard(Mutex<Option<String>>);
 
 struct CurrentHotkey(Mutex<Shortcut>);
+struct RepeatHotkey(Mutex<Shortcut>);
 
 fn default_shortcut() -> Shortcut {
     Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyG)
+}
+
+fn repeat_shortcut_for(base: &Shortcut) -> Shortcut {
+    // Repeat fires the same key with the SHIFT modifier added on top of
+    // whatever the main hotkey carries. We never want a base shortcut that
+    // already has Shift set — `set_hotkey` enforces that on the JS side.
+    let mods = base.mods | Modifiers::SHIFT;
+    Shortcut::new(Some(mods), base.key)
 }
 
 const QUICK_EDIT_LABEL: &str = "quick-edit";
@@ -31,20 +40,41 @@ fn main() {
     tauri::Builder::default()
         .manage(OriginalClipboard::default())
         .manage(CurrentHotkey(Mutex::new(default_shortcut())))
+        .manage(RepeatHotkey(Mutex::new(repeat_shortcut_for(
+            &default_shortcut(),
+        ))))
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state() == ShortcutState::Pressed {
-                        let app = app.clone();
-                        thread::spawn(move || {
-                            if let Err(e) = trigger_quick_edit(&app) {
-                                eprintln!("[r3write] quick-edit trigger failed: {e}");
-                            }
-                        });
+                .with_handler(|app, shortcut, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
                     }
+                    let current = app
+                        .state::<CurrentHotkey>()
+                        .0
+                        .lock()
+                        .ok()
+                        .map(|g| g.clone());
+                    let repeat = app
+                        .state::<RepeatHotkey>()
+                        .0
+                        .lock()
+                        .ok()
+                        .map(|g| g.clone());
+                    let is_repeat = repeat.as_ref().is_some_and(|r| r == shortcut);
+                    let is_main = current.as_ref().is_some_and(|c| c == shortcut);
+                    if !is_repeat && !is_main {
+                        return;
+                    }
+                    let app = app.clone();
+                    thread::spawn(move || {
+                        if let Err(e) = trigger_quick_edit(&app, is_repeat) {
+                            eprintln!("[r3write] quick-edit trigger failed: {e}");
+                        }
+                    });
                 })
                 .build(),
         )
@@ -53,6 +83,11 @@ fn main() {
             match app.global_shortcut().register(shortcut) {
                 Ok(_) => eprintln!("[r3write] registered Ctrl+Alt+G global shortcut"),
                 Err(e) => eprintln!("[r3write] FAILED to register Ctrl+Alt+G: {e}"),
+            }
+            let repeat = repeat_shortcut_for(&shortcut);
+            match app.global_shortcut().register(repeat) {
+                Ok(_) => eprintln!("[r3write] registered Ctrl+Alt+Shift+G (repeat)"),
+                Err(e) => eprintln!("[r3write] repeat shortcut register failed: {e}"),
             }
 
             let show_item = MenuItem::with_id(app, "tray:show", "Show R3write", true, None::<&str>)?;
@@ -140,6 +175,9 @@ fn main() {
             accept_rewrite,
             dismiss_popup,
             set_hotkey,
+            set_clipboard,
+            autostart_set,
+            autostart_get,
             secret_set,
             secret_get,
             secret_delete,
@@ -156,10 +194,49 @@ fn show_main(app: &AppHandle) {
     }
 }
 
-fn trigger_quick_edit(app: &AppHandle) -> Result<(), String> {
-    // The user is still physically holding Ctrl+Alt from the hotkey when this
-    // fires. If we send Ctrl+C now Windows sees Ctrl+Alt+C and the copy is a
-    // no-op. Force-release the modifiers first, then wait for the OS to settle.
+// New capture flow: show the popup first (without grabbing focus) so the user
+// gets immediate visual feedback that the hotkey was received, then run the
+// clipboard dance in a background thread. The popup renders a "Capturing…"
+// state on receipt of the `capture-start` event, and swaps in the real text
+// once `captured-text` / `captured-text-repeat` arrives.
+fn trigger_quick_edit(app: &AppHandle, repeat: bool) -> Result<(), String> {
+    let (x, y) = cursor_position(app);
+    if let Some(w) = app.get_webview_window(QUICK_EDIT_LABEL) {
+        let _ = w.set_position(PhysicalPosition::new(x, y));
+        let _ = w.show();
+        // Tell the popup a capture is in progress. Don't set_focus yet — the
+        // source app must keep foreground so Ctrl+C copies from there.
+        let _ = w.emit("capture-start", repeat);
+    } else {
+        eprintln!("[r3write] quick-edit window not found");
+        return Ok(());
+    }
+
+    let app_handle = app.clone();
+    thread::spawn(move || {
+        let captured = capture_selection(&app_handle).unwrap_or_default();
+        eprintln!(
+            "[r3write] quick-edit captured (repeat={repeat}, selection_len={})",
+            captured.chars().count()
+        );
+        if let Some(w) = app_handle.get_webview_window(QUICK_EDIT_LABEL) {
+            let _ = w.set_focus();
+            let event = if repeat { "captured-text-repeat" } else { "captured-text" };
+            let _ = w.emit(event, captured);
+        }
+    });
+
+    Ok(())
+}
+
+// Blocking clipboard capture. Releases physically-held modifiers, sends
+// Ctrl+C, then polls the clipboard until the sentinel is replaced (selection
+// landed) or a short timeout expires (selection was empty). Restores the
+// previous clipboard before returning.
+fn capture_selection(app: &AppHandle) -> Result<String, String> {
+    // The user is still physically holding the modifiers from the hotkey.
+    // If we send Ctrl+C now, Windows sees the held Alt and the copy is a
+    // no-op. Force-release the modifiers and wait briefly for the OS to settle.
     {
         let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
         let _ = enigo.key(Key::Alt, Direction::Release);
@@ -167,7 +244,7 @@ fn trigger_quick_edit(app: &AppHandle) -> Result<(), String> {
         let _ = enigo.key(Key::Shift, Direction::Release);
         let _ = enigo.key(Key::Meta, Direction::Release);
     }
-    thread::sleep(Duration::from_millis(80));
+    thread::sleep(Duration::from_millis(60));
 
     let original = app.clipboard().read_text().ok();
     *app.state::<OriginalClipboard>()
@@ -175,20 +252,36 @@ fn trigger_quick_edit(app: &AppHandle) -> Result<(), String> {
         .lock()
         .map_err(|e| e.to_string())? = original.clone();
 
-    // Sentinel detects a no-op Ctrl+C: if nothing is selected the OS doesn't
-    // touch the clipboard, so the sentinel survives. Without it we'd open the
-    // popup against whatever stale text was last copied.
+    // Sentinel: if nothing is selected the OS doesn't touch the clipboard,
+    // so the sentinel survives the Ctrl+C round-trip and we know to treat
+    // the capture as empty.
     let _ = app.clipboard().write_text(CLIPBOARD_SENTINEL.to_string());
-    thread::sleep(Duration::from_millis(30));
+    thread::sleep(Duration::from_millis(20));
 
     send_modifier_combo(Key::Control, Key::Unicode('c'))?;
-    thread::sleep(Duration::from_millis(180));
 
-    let raw = app.clipboard().read_text().unwrap_or_default();
-    let captured = if raw == CLIPBOARD_SENTINEL { String::new() } else { raw };
+    // Poll the clipboard for change instead of sleeping a fixed amount. On a
+    // fast machine this returns in ~10ms (the OS finishes the copy quickly);
+    // on a laggy app (Office, Electron) it waits the full budget. Max wait
+    // ~220ms — tighter than the prior fixed 180ms in the happy path.
+    let captured = {
+        let mut waited = 0u64;
+        let current = loop {
+            let now = app.clipboard().read_text().unwrap_or_default();
+            if now != CLIPBOARD_SENTINEL {
+                break now;
+            }
+            if waited >= 220 {
+                break String::new();
+            }
+            thread::sleep(Duration::from_millis(10));
+            waited += 10;
+        };
+        current
+    };
 
-    // Restore the original clipboard immediately so the user's clipboard is
-    // never left holding the sentinel or the captured selection.
+    // Restore the original clipboard so the user is never left with the
+    // sentinel (or the captured selection) hanging around.
     match &original {
         Some(orig) => {
             let _ = app.clipboard().write_text(orig.clone());
@@ -198,22 +291,7 @@ fn trigger_quick_edit(app: &AppHandle) -> Result<(), String> {
         }
     }
 
-    eprintln!(
-        "[r3write] quick-edit triggered (selection_len={})",
-        captured.chars().count()
-    );
-
-    let (x, y) = cursor_position(app);
-    if let Some(w) = app.get_webview_window(QUICK_EDIT_LABEL) {
-        let _ = w.set_position(PhysicalPosition::new(x, y));
-        let _ = w.show();
-        let _ = w.set_focus();
-        w.emit("captured-text", captured).map_err(|e| e.to_string())?;
-    } else {
-        eprintln!("[r3write] quick-edit window not found");
-    }
-
-    Ok(())
+    Ok(captured)
 }
 
 #[tauri::command]
@@ -250,6 +328,14 @@ fn dismiss_popup(app: AppHandle, state: tauri::State<OriginalClipboard>) -> Resu
         let _ = app.clipboard().write_text(orig);
     }
     Ok(())
+}
+
+// Plain clipboard write — used by the main window's revert flow to put the
+// pre-rewrite text back on the user's clipboard so they can paste it over
+// the rewrite in the source app.
+#[tauri::command]
+fn set_clipboard(app: AppHandle, text: String) -> Result<(), String> {
+    app.clipboard().write_text(text).map_err(|e| e.to_string())
 }
 
 fn send_modifier_combo(modifier: Key, key: Key) -> Result<(), String> {
@@ -313,6 +399,7 @@ fn parse_code(s: &str) -> Option<Code> {
 fn set_hotkey(
     app: AppHandle,
     state: tauri::State<CurrentHotkey>,
+    repeat_state: tauri::State<RepeatHotkey>,
     ctrl: bool,
     alt: bool,
     shift: bool,
@@ -327,10 +414,17 @@ fn set_hotkey(
     if mods.is_empty() {
         return Err("At least one modifier (Ctrl, Alt, Shift, Win) is required.".into());
     }
+    if shift {
+        return Err(
+            "The main hotkey can't use Shift — Shift is reserved for the repeat-last-action variant.".into(),
+        );
+    }
     let key = parse_code(&code).ok_or_else(|| format!("Unsupported key: {code}"))?;
     let next = Shortcut::new(Some(mods), key);
+    let next_repeat = repeat_shortcut_for(&next);
 
     let prev = state.0.lock().map_err(|e| e.to_string())?.clone();
+    let prev_repeat = repeat_state.0.lock().map_err(|e| e.to_string())?.clone();
     if next == prev {
         return Ok(());
     }
@@ -338,17 +432,87 @@ fn set_hotkey(
     if let Err(e) = gs.unregister(prev.clone()) {
         eprintln!("[r3write] unregister prev failed: {e}");
     }
+    if let Err(e) = gs.unregister(prev_repeat.clone()) {
+        eprintln!("[r3write] unregister prev repeat failed: {e}");
+    }
     match gs.register(next.clone()) {
         Ok(()) => {
             *state.0.lock().map_err(|e| e.to_string())? = next;
+            if let Err(e) = gs.register(next_repeat.clone()) {
+                eprintln!("[r3write] register repeat failed: {e}");
+            } else {
+                *repeat_state.0.lock().map_err(|e| e.to_string())? = next_repeat;
+            }
             eprintln!("[r3write] hotkey rebound to {code} (mods: c={ctrl} a={alt} s={shift} m={meta})");
             Ok(())
         }
         Err(e) => {
             let _ = gs.register(prev);
+            let _ = gs.register(prev_repeat);
             Err(format!("Could not bind {code}: {e}"))
         }
     }
+}
+
+// Autostart on Windows is wired through the per-user Run registry key. This
+// is the same mechanism Tauri's autostart plugin uses on Windows, kept inline
+// here to avoid pulling in another plugin + capability.
+#[cfg(windows)]
+fn autostart_apply(enable: bool) -> Result<(), String> {
+    use std::process::Command;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = exe.to_string_lossy();
+    let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    let name = "R3write";
+    let status = if enable {
+        Command::new("reg")
+            .args([
+                "add", key, "/v", name, "/t", "REG_SZ", "/d", &format!("\"{exe}\""), "/f",
+            ])
+            .status()
+            .map_err(|e| e.to_string())?
+    } else {
+        // Tolerate "value not found" — treat as success.
+        Command::new("reg")
+            .args(["delete", key, "/v", name, "/f"])
+            .status()
+            .map_err(|e| e.to_string())?
+    };
+    if !status.success() && enable {
+        return Err(format!("reg add exited with {status}"));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn autostart_query() -> Result<bool, String> {
+    use std::process::Command;
+    let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    let out = Command::new("reg")
+        .args(["query", key, "/v", "R3write"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    Ok(out.status.success())
+}
+
+#[cfg(not(windows))]
+fn autostart_apply(_enable: bool) -> Result<(), String> {
+    Err("Autostart is currently only implemented on Windows.".into())
+}
+
+#[cfg(not(windows))]
+fn autostart_query() -> Result<bool, String> {
+    Ok(false)
+}
+
+#[tauri::command]
+fn autostart_set(enable: bool) -> Result<(), String> {
+    autostart_apply(enable)
+}
+
+#[tauri::command]
+fn autostart_get() -> Result<bool, String> {
+    autostart_query()
 }
 
 const KEYRING_SERVICE: &str = "R3write";
