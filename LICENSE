@@ -1,0 +1,89 @@
+R3write — Beta License
+=======================
+
+Copyright (c) 2026 drknowhow. All rights reserved.
+
+R3write is currently in beta. This document sets the terms on which the
+app and its source code are made available during that period.
+
+
+1. Free during beta
+-------------------
+
+During the beta period, R3write is FREE to download, install, and use for
+personal and evaluation purposes on any number of your own machines, on
+Windows 10 / 11.
+
+
+2. Source visibility
+--------------------
+
+The source code is published on GitHub for transparency, learning, and
+community contribution. It is NOT released under an open-source license
+at this time. Publication does not grant any rights beyond those stated
+in this document.
+
+
+3. Future model
+---------------
+
+R3write may move to a one-time support payment per major version (for
+example, 1.x → 2.x) once it exits beta. Any such change will be
+announced before it takes effect. Beta users will continue to be able
+to use the beta version free of charge, and prior major versions of
+the app will continue to function without an active payment.
+
+
+4. What you may do
+------------------
+
+- Download, install, and use R3write on your own machines, free during beta.
+- Read, study, and learn from the published source.
+- File issues, suggest features, and submit pull requests on GitHub.
+- Build the app from source for personal use.
+- Share screenshots, recordings, or reviews of R3write.
+
+
+5. What you may not do (without prior written permission)
+---------------------------------------------------------
+
+- Redistribute the app, the installer, or modified builds.
+- Sell, sublicense, or rent R3write or any derivative work.
+- Use the source code as the basis for a product that competes with R3write.
+- Remove, obscure, or alter the copyright notice, brand mark, or
+  attribution in the app, installer, or source.
+- Use the R3write name, logo, or brand in ways that imply endorsement
+  or affiliation without permission.
+
+
+6. Third-party AI providers
+---------------------------
+
+R3write connects directly to whichever AI provider you configure
+(Local Ollama, Ollama Cloud, Google Gemini, OpenAI, Anthropic, Groq,
+OpenRouter). Your API keys and the text you rewrite never pass through
+any server controlled by R3write or its author. R3write provides no
+proxy, no telemetry, and no analytics.
+
+Your use of each provider is governed by that provider's own terms of
+service and privacy policy. R3write is not responsible for provider
+availability, accuracy, billing, or data handling.
+
+
+7. No warranty
+--------------
+
+R3write is provided "AS IS", without warranty of any kind, express or
+implied, including but not limited to warranties of merchantability,
+fitness for a particular purpose, and non-infringement. In no event
+shall the author be liable for any claim, damages, or other liability
+arising from the use of R3write.
+
+
+8. Contact
+----------
+
+Questions about this license, or requests for permission outside its
+terms, can be filed as an issue on GitHub:
+
+  https://github.com/drknowhow/R3write/issues

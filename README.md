@@ -20,7 +20,7 @@
   <a href="https://github.com/drknowhow/R3write/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/drknowhow/R3write?label=download&color=7c3aed"/></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue"/>
   <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24c8db"/>
-  <img alt="License" src="https://img.shields.io/badge/license-TBD-lightgrey"/>
+  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Beta%20%C2%B7%20Free-7c3aed"/></a>
 </p>
 
 ---
@@ -227,4 +227,6 @@ Full history in [`CHANGELOG.md`](./CHANGELOG.md). Latest: **1.3.0** &mdash; Goog
 
 ## License
 
-TBD.
+R3write is in **beta** and free to use during the beta period for personal and evaluation purposes — see [`LICENSE`](./LICENSE) for the full terms.
+
+Source is published on GitHub for transparency and contribution; it is not released under an open-source license at this time. Once the app exits beta, R3write may move to a one-time support payment per major version, with prior major versions remaining usable and beta builds remaining free.
