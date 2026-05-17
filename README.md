@@ -12,7 +12,8 @@
 
 <p align="center">
   <a href="https://drknowhow.github.io/R3write/"><strong>Website &rarr;</strong></a> &nbsp;·&nbsp;
-  <a href="https://drknowhow.lemonsqueezy.com/checkout/buy/627f5ad5-2aa2-4503-b79a-245e53abdbb3"><strong>Download</strong></a> &nbsp;·&nbsp;
+  <a href="https://github.com/drknowhow/R3write/releases/latest/download/R3write-setup.exe"><strong>Download</strong></a> &nbsp;·&nbsp;
+  <a href="https://drknowhow.lemonsqueezy.com/checkout/buy/627f5ad5-2aa2-4503-b79a-245e53abdbb3">Buy activation key</a> &nbsp;·&nbsp;
   <a href="https://github.com/drknowhow/R3write/releases/latest">Release notes</a> &nbsp;·&nbsp;
   <a href="./CHANGELOG.md">Changelog</a>
 </p>
@@ -42,9 +43,11 @@
 
 ## Quick install
 
-**[Download R3write →](https://drknowhow.lemonsqueezy.com/checkout/buy/627f5ad5-2aa2-4503-b79a-245e53abdbb3)** &nbsp; *(pay what you want, $5 minimum — receipt includes the installer and a license key)*
+R3write is **free to install** and **pay-what-you-want to unlock**.
 
-Run the installer, then paste the license key on first launch to activate. Without a key the app stays locked on the activation screen; with one it unlocks the main window and the quick-edit popup permanently on that machine.
+1. **[Download R3write →](https://github.com/drknowhow/R3write/releases/latest/download/R3write-setup.exe)** from GitHub and run the installer.
+2. **[Buy a license key →](https://drknowhow.lemonsqueezy.com/checkout/buy/627f5ad5-2aa2-4503-b79a-245e53abdbb3)** at the Lemon Squeezy checkout (pay what you want, $5 minimum). The receipt email includes your key.
+3. **Paste the key on first launch** to activate. Without a key the app stays locked on the activation screen; with one it unlocks the main window and the quick-edit popup permanently on that machine. The activation gate itself has a **Buy a key** button if you skipped step 2.
 
 See the [release page](https://github.com/drknowhow/R3write/releases/latest) for release notes and changelog.
 

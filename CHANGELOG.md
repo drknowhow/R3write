@@ -12,8 +12,9 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 - **Lemon Squeezy license activation.** Hard gate on the main window and the quick-edit popup until a valid license key is entered. New **License** tab in Settings shows status (masked key, customer email, activations used / limit, last-validated timestamp) with **Re-validate** and **Deactivate this machine** controls. Activation calls `api.lemonsqueezy.com/v1/licenses/activate`; subsequent launches call `/validate`. License key and Lemon Squeezy `instance_id` live in Windows Credential Manager alongside the provider API keys. Offline `/validate` failures fall back to the cached active state so a paid user with a dropped connection isn't locked out; an explicit invalid response (refund, manual revoke) re-shows the gate.
 
 ### Changed
-- **Installer distribution.** The Windows installer is no longer attached to GitHub releases. Download from the [Lemon Squeezy checkout](https://drknowhow.lemonsqueezy.com/checkout/buy/627f5ad5-2aa2-4503-b79a-245e53abdbb3) — pay what you want ($5 minimum); the receipt includes the license key required to activate. GitHub releases now carry release notes only.
-- **Hero site (`docs/`).** All `Download for Windows` buttons point to the Lemon Squeezy checkout instead of `releases/latest/download/R3write-setup.exe`. Install steps updated to reflect the paste-key-on-first-launch flow.
+- **Dual distribution.** The Windows installer is published on **both** GitHub releases (free download — `releases/latest/download/R3write-setup.exe`) **and** the [Lemon Squeezy checkout](https://drknowhow.lemonsqueezy.com/checkout/buy/627f5ad5-2aa2-4503-b79a-245e53abdbb3) (pay what you want, $5 minimum). The binary is identical on both paths; what unlocks the app is the license key, which comes from Lemon Squeezy.
+- **Hero site (`docs/`) + README.** Download buttons point to the GitHub installer; a secondary "Get activation key" button points to Lemon Squeezy. Install steps reflect the flow: install free, paste key on first launch.
+- **`scripts/release.sh`.** Step 7 re-attaches the versioned + stable-named installers to the GitHub release and reminds the operator to also upload to Lemon Squeezy.
 
 ## [1.3.0] - 2026-05-17
 
