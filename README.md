@@ -1,143 +1,160 @@
-# R3write
+<p align="center">
+  <img src="docs/banner.png" alt="R3write" width="720" />
+</p>
 
-Inline AI rewrite for Windows. Select text anywhere, press `Ctrl+Alt+G`,
-pick an action, paste the result back. Local by default (free Ollama),
-multi-provider for speed (Gemini, OpenAI, Anthropic, Groq, OpenRouter,
-Ollama Cloud).
+<h1 align="center">R3write</h1>
 
-> Current release: **1.3.0**. See [`CHANGELOG.md`](./CHANGELOG.md) for the
-> full history.
+<p align="center">
+  <strong>Inline AI rewrite for Windows.</strong><br/>
+  Select text in any app. Press <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>G</kbd>. Pick an action. Paste the result back.<br/>
+  Local-by-default with free Ollama, multi-provider for speed — Gemini, OpenAI, Anthropic, Groq, OpenRouter, Ollama Cloud.
+</p>
 
-## What it does
+<p align="center">
+  <a href="https://github.com/drknowhow/R3write/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/drknowhow/R3write?label=download&color=7c3aed"/></a>
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue"/>
+  <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24c8db"/>
+  <img alt="License" src="https://img.shields.io/badge/license-TBD-lightgrey"/>
+</p>
 
-- **System-wide quick edit (primary flow)** — select text in any
-  Windows app, press `Ctrl+Alt+G`. A small frameless popup appears at
-  the cursor with Improve / Fix grammar / Shorten / Expand / Tone /
-  Prompt / Custom-prompt actions. The popup shows a `Capturing…`
-  placeholder immediately while the clipboard handoff runs in a
-  background thread, then streams the rewrite. Accept pastes back
-  into the originating app; the original clipboard is preserved.
-- **Repeat last action** — same selection, press `Ctrl+Alt+Shift+G` to
-  rerun the previous action with no picker. Custom prompts replay the
-  most recent custom prompt verbatim.
-- **Saved templates and recent custom prompts** — name your common
-  custom prompts in Settings → Templates and they appear as a dropdown
-  in the popup. Recent custom prompts surface as one-click chips
-  underneath the custom-prompt input.
-- **Style guide + protected terms** — Settings → Glossary lets you
-  paste a persistent style guide (appended to every system prompt) and
-  a list of protected terms the model must keep verbatim (names,
-  identifiers, brand strings).
-- **Paste-as toggle** — popup footer toggles between **Plain**
-  (Markdown stripped, default) and **MD** (raw Markdown) so
-  destinations like Slack, Discord, or code editors render structure
-  intact.
-- **Prompt section (token-efficient rewrites for LLMs / agents).**
-  Three actions targeted at rewriting prompts rather than prose:
-  *Compress tokens*, *Distill intent*, *Structure for agents*. All
-  three are explicitly told not to invent new requirements.
-- **Multi-turn refinement** — type a follow-up after the first reply
-  ("more concise", "less formal"). Context is capped to
-  `system + first turn + last assistant + new user` so regenerate
-  cycles don't compound token cost.
-- **Rendered / Diff toggle** — preview the rewrite as rendered
-  Markdown or as a word-level inline diff against the original. The
-  choice is persisted across sessions.
-- **Educational + Affirmation channels** — optional side-cards under
-  Settings → Feedback. "Why this works" explains the most important
-  changes; "Note" adds one specific encouragement about what the
-  original did well. Excluded from paste-back, history, and the Diff.
-- **Main window = history + live health.** Compact list of recent
-  rewrites (last 20). Header shows a status pill that polls the active
-  provider every 60s — green/amber/red dot with latency tooltip. Click
-  the pill to jump to Settings. Revert copies the original back to the
-  clipboard for one-shot paste-over-the-rewrite.
-- **First-run onboarding** — four-step walkthrough on first launch
-  with a one-click jump to Settings.
-- **Tray icon.** Closing the main window hides it to the tray; the
-  global hotkey keeps working. Right-click for Show / Support / Quit.
-- **Autostart at login** — toggle in Settings → Advanced registers a
-  Windows per-user `Run` entry. Tray comes up on sign-in.
-- **Export history** as JSON or Markdown from Settings → Advanced.
-- **Modern UI.** System-aware light/dark theme with manual override,
-  Radix-based dialogs, framer-motion transitions, Lucide icons,
-  pre-hydration theme boot script so there's no flash.
+---
 
-## Providers
+<p align="center">
+  <img src="docs/screenshots/hero-popup.png" alt="R3write popup mid-rewrite, showing the original sentence, the streamed Improve rewrite, +12 -6 words / first-token latency stats, follow-up tone chips, and accept/regenerate/reject pills" />
+</p>
 
-The dropdown is ordered free-first; the default for new installs is
-**Ollama Cloud**.
+<p align="center">
+  <em>Select text in Word, the popup streams an Improve rewrite, you Accept &amp; paste — every keystroke without leaving the source app.</em>
+</p>
 
-| Provider        | Tier                  | Default model              | Notes                                 |
-| --------------- | --------------------- | -------------------------- | ------------------------------------- |
-| Ollama Cloud    | Free tier · BYO key   | `gemma4:31b-cloud`         | Default. Free quota + paid tiers.     |
-| Local Ollama    | Free                  | `llama3.2`                 | Runs on your machine, no key.         |
-| Google Gemini   | Free tier · BYO key   | `gemini-2.5-flash`         | Most generous free tier; very fast.   |
-| Groq            | Free tier · BYO key   | `llama-3.3-70b-versatile`  | Fastest streaming token rate.         |
-| OpenRouter      | Free tier · BYO key   | `anthropic/claude-sonnet-4`| Aggregator; many models.              |
-| OpenAI          | BYO key               | `gpt-4.1-mini`             | Paid only.                            |
-| Anthropic       | BYO key               | `claude-sonnet-4-6`        | Paid only.                            |
+## Why R3write
 
-API keys are stored per-provider in **Windows Credential Manager** via
-the `keyring` crate (service `R3write`, accounts
-`r3write-api-key-<provider>` and the legacy `ollama-api-key` for
-Ollama Cloud). They never touch `localStorage`.
+- **Inline, not a tab.** No window-switching. The rewrite happens where you're already typing.
+- **Free by default.** Local Ollama is the zero-cost path — no key, no quota, no network. Cloud providers are opt-in for speed or quality.
+- **Bring your own key.** Every cloud provider uses your own API key, stored per-provider in Windows Credential Manager — never on disk in plain text, never proxied through anyone else's server.
+- **Word-level diff.** See exactly what changed, every time. Green additions, red deletions, on the same surface where you accepted the rewrite.
 
-## Stack
+## Quick install
 
-- **Tauri 2** (Rust) — Windows-targeted desktop shell, NSIS installer.
-- **React 18 + TypeScript + Vite + Tailwind v4** — frontend.
-- **Multi-page Vite build** — `index.html` (main window) and
-  `quick-edit.html` (popup) are emitted as separate entries so the
-  popup ships only what it needs.
-- **Radix UI primitives** — `react-dialog`, `react-tooltip`,
-  `react-dropdown-menu` for accessible headless components.
-- **Framer Motion** — dialog enter/exit animations.
-- **Lucide React** — icon set.
-- **`marked` + `DOMPurify`** — Markdown → sanitised HTML for the
-  rendered popup output.
-- **`diff`** — inline word diff in the popup's Diff view and the
-  main-window history list.
-- **Provider clients** — Ollama (`/api/chat` NDJSON), OpenAI-compatible
-  SSE (OpenAI / Groq / OpenRouter via `/v1/chat/completions`),
-  Anthropic (`/v1/messages` SSE), Gemini
-  (`:streamGenerateContent?alt=sse`). All routed through
-  `tauri-plugin-http` so CORS does not apply.
-- **enigo** — keyboard simulation for the `Ctrl+C` / `Ctrl+V` capture
-  and paste-back.
-- **keyring (windows-native)** — per-provider API key storage in
-  Windows Credential Manager.
+**Download the installer** &nbsp;→&nbsp; [`R3write_<version>_x64-setup.exe`](https://github.com/drknowhow/R3write/releases/latest) &nbsp; *(unsigned NSIS, ~3.6 MB)*
 
-## Prerequisites
-
-- Windows 10/11
-- [Node.js](https://nodejs.org) ≥ 20
-- [Rust](https://rustup.rs/) stable + the **Microsoft C++ Build Tools**
-  (Visual Studio 2022 with the "Desktop development with C++" workload)
-- [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
-  (preinstalled on most up-to-date Windows installs)
-- A provider key, or a local
-  [Ollama](https://ollama.com/download) install. The free Local Ollama
-  path needs no key at all; cloud providers each have their own free
-  tier or paid signup.
-
-## Run
+**Or build from source:**
 
 ```powershell
+git clone https://github.com/drknowhow/R3write
+cd R3write
 npm install
 npm run tauri:dev
 ```
 
-First launch shows a four-step onboarding dialog. After dismissing it:
+**Prerequisites:** Windows 10/11 · Node ≥ 20 · Rust stable + MSVC Build Tools · WebView2 (preinstalled on recent Windows).
 
-1. Click the status pill or **Settings** in the top-right.
-2. Pick a provider in **Model → Provider**. Each is tagged `Free`,
-   `Free tier · BYO key`, or `BYO key`.
-3. Paste your API key if the provider needs one.
-4. Click **Test connection** to verify the model responds.
-5. Save.
+On first launch a four-step onboarding shows you where to set up a provider. Default is Ollama Cloud (free tier); switch to Local Ollama for zero-cost local inference or any of the other five cloud providers from `Settings → Model → Provider`.
 
-Then select text in any app and press `Ctrl+Alt+G`.
+---
+
+## What's in it
+
+### One hotkey, any app
+
+<p align="center">
+  <img src="docs/screenshots/popup-actions.png" alt="The action picker after capturing a selection from Word — chips for Improve, Fix grammar, Shorten, Expand, Tone, Prompt, and Custom" />
+</p>
+
+Word, Slack, browsers, code editors, terminals — anywhere there's text. The popup opens at your cursor with `Improve` / `Fix grammar` / `Shorten` / `Expand` / `Tone` / `Prompt` / `Custom`. Each chip has a numeric shortcut (`1`-`4`, `C`) so you never need the mouse. Pick one and the rewrite streams in.
+
+Repeat the same action on a new selection with <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>G</kbd> — no picker, no clicks.
+
+### Word-level diff
+
+<p align="center">
+  <img src="docs/screenshots/popup-diff.png" alt="Diff view inside the popup — the rewrite is rendered as a word-level inline diff with green additions and red strike-through deletions" />
+</p>
+
+Toggle the rewrite into `Diff` view to see exactly what changed: green for additions, red strike-through for deletions, with a running `+N -M words` tally and the first-token latency. Sanitised for both light and dark themes.
+
+### Your providers, your keys
+
+<p align="center">
+  <img src="docs/screenshots/settings-providers.png" alt="Settings dialog with the Provider dropdown open, showing all seven providers and their tier tags" />
+</p>
+
+| Provider | Tier | Default model | Notes |
+|---|---|---|---|
+| **Local Ollama** | Free | `llama3.2` | runs on your machine, no key |
+| **Ollama Cloud** | Free tier · BYO key | `gemma4:31b-cloud` | default for new installs |
+| **Google Gemini** | Free tier · BYO key | `gemini-2.5-flash` | most generous free tier; very fast |
+| **Groq** | Free tier · BYO key | `llama-3.3-70b-versatile` | fastest streaming token rate |
+| **OpenRouter** | Free tier · BYO key | `anthropic/claude-sonnet-4` | aggregator, many models |
+| **OpenAI** | BYO key | `gpt-4.1-mini` | paid only |
+| **Anthropic** | BYO key | `claude-sonnet-4-6` | paid only |
+
+Each provider has its own keyring entry in Windows Credential Manager. Switch providers and the others' keys stay put. A live status pill in the header polls the active provider every 60 s — green/amber/red.
+
+### History at a glance
+
+<p align="center">
+  <img src="docs/screenshots/main-window.png" alt="Main window history list, showing three Improve rewrites with rich word-level diff highlighting and Revert buttons" width="600" />
+</p>
+
+Last 20 rewrites with action, time, word-level diff, and one-click Revert (copies the original back to your clipboard for paste-over-the-rewrite). Closing the main window keeps R3write running in the system tray so the global hotkey still fires.
+
+---
+
+## Power features
+
+- **Saved templates** &mdash; name your common custom prompts in `Settings → Templates`; they surface as a popup dropdown next to `Tone` / `Prompt` / `Custom`.
+- **Recent custom prompts** &mdash; last 12 surface as one-click chips beneath the custom-prompt input.
+- **Glossary &amp; protected terms** &mdash; `Settings → Glossary` appends a persistent style guide to every system prompt and locks listed terms (names, identifiers, brand strings) so the model preserves them verbatim.
+- **Paste-as toggle** &mdash; `Plain` strips Markdown for clean prose; `MD` preserves Markdown for Slack, Discord, code editors. Choice persists.
+- **Three Prompt actions** for rewriting LLM/agent prompts &mdash; `Compress tokens` / `Distill intent` / `Structure for agents`. None invent new requirements.
+- **Multi-turn refinement** &mdash; follow up with "more concise", "less formal", etc. Context is capped to `system + first turn + last assistant + new user` so cycles don't compound token cost.
+- **Educational + Affirmation channels** (optional) &mdash; the model adds a "Why this works" note or a one-line encouragement, in a side-card. Excluded from paste-back and history.
+- **Customisable hotkeys** &mdash; rebind both the main hotkey and every in-popup shortcut.
+- **Autostart at login** &mdash; toggle in `Settings → Advanced` (writes the Windows per-user `Run` registry key).
+- **Export history** as JSON or Markdown from `Settings → Advanced`.
+- **System / light / dark theme** with manual override, pre-hydration boot script (no flash), View Transitions API crossfade where supported.
+- **First-run onboarding** &mdash; four-step walkthrough and one-click jump to Settings.
+
+## How it works under the hood
+
+R3write is a two-window Tauri 2 app:
+
+- **Main window** &mdash; history list, status pill, settings, system tray host.
+- **Quick-edit popup** &mdash; frameless `alwaysOnTop` window, pre-mounted, shown at cursor.
+
+The hotkey handler in Rust shows the popup immediately with a `Capturing…` placeholder, then runs the clipboard dance in a background thread (release modifiers, write sentinel, simulate `Ctrl+C`, poll for clipboard change, restore original). The captured text streams to the popup; the popup makes a single streaming request to the active provider via `tauri-plugin-http` and writes tokens directly to the DOM via `requestAnimationFrame` (so React re-renders stay at ~3 per response).
+
+Each window loads its own HTML and JS entry (`index.html` + `quick-edit.html`) so the popup ships only what it needs &mdash; cold-start parse cost stays small even as the main window grows new tabs.
+
+## Stack
+
+- **Tauri 2** (Rust) &mdash; Windows shell, NSIS installer
+- **React 18 + TypeScript + Vite + Tailwind v4** &mdash; frontend
+- **Multi-page Vite build** &mdash; separate entries per window
+- **Radix UI + Framer Motion + Lucide React** &mdash; accessible primitives, animations, icons
+- **`marked` + `DOMPurify` + `diff`** &mdash; Markdown rendering and inline diff
+- **enigo** &mdash; keyboard simulation for `Ctrl+C` / `Ctrl+V` capture and paste-back
+- **keyring (windows-native)** &mdash; per-provider API key storage
+
+## Configuration
+
+Settings persist in `localStorage` under `r3write.settings.v1`; API keys live in Windows Credential Manager (`service: R3write`, `account: r3write-api-key-<provider>` or the legacy `ollama-api-key` for Ollama Cloud). The full schema lives in `DEFAULT_SETTINGS` in [`src/main.tsx`](src/main.tsx); the most user-facing fields:
+
+| Field | Default | Notes |
+|---|---|---|
+| `provider` | `ollama-cloud` | Any of the seven providers; legacy `cloud` / `local` migrate on first load. |
+| `model` | provider-dependent | Any model name your provider serves. |
+| `hotkey` | `Ctrl+Alt+G` | Repeat-last uses the same combo + Shift. |
+| `viewMode` | `rendered` | `rendered` or `diff` &mdash; persisted. |
+| `pasteFormat` | `plain` | `plain` strips Markdown on Accept; `markdown` keeps it. |
+| `savedTemplates` | `[]` | Named custom prompts shown in the popup. |
+| `styleGuide` | `""` | Appended to every system prompt. |
+| `protectedTerms` | `""` | Comma- or newline-separated; preserved verbatim. |
+| `clickOutsideDismiss` | `true` | Closes the popup on window-blur (drag-safe). |
+| `autostart` | `false` | Mirrors the Windows per-user `Run` registry value. |
+
+Theme preference is stored under `r3write.theme.v1` and applied pre-hydration; history under `r3write.history.v1` (last 20 entries).
 
 ## Build a release installer
 
@@ -145,89 +162,43 @@ Then select text in any app and press `Ctrl+Alt+G`.
 npm run tauri:build
 ```
 
-The NSIS installer lands in
-`src-tauri/target/release/bundle/nsis/R3write_<version>_x64-setup.exe`.
-
-Code signing is not yet wired up; without it Windows SmartScreen will
-warn on install. Azure Trusted Signing is the recommended modern path.
-
-## Configuration
-
-Settings are stored in `localStorage` under `r3write.settings.v1`.
-Notable fields:
-
-| Field                | Default                | Notes                                                                 |
-| -------------------- | ---------------------- | --------------------------------------------------------------------- |
-| `provider`           | `ollama-cloud`         | One of the seven providers above. Legacy `cloud` / `local` migrate.   |
-| `baseUrl`            | provider-dependent     | Auto-filled when provider changes.                                    |
-| `model`              | provider-dependent     | Any model name the provider serves.                                   |
-| `apiKey`             | — (keyring)            | Stored per-provider in Windows Credential Manager.                    |
-| `hotkey`             | `Ctrl+Alt+G`           | Repeat-last uses the same key + Shift.                                |
-| `bubbleShortcuts`    | `1`-`4`, `C`, `Enter`, `R` | In-popup keys for actions / accept / regenerate.                  |
-| `viewMode`           | `rendered`             | `rendered` or `diff` — persisted.                                     |
-| `lastAction`         | `null`                 | Used by the repeat hotkey.                                            |
-| `pasteFormat`        | `plain`                | `plain` strips Markdown on accept; `markdown` pastes raw.             |
-| `customPromptHistory`| `[]`                   | Last 12 custom prompts (most recent first).                           |
-| `savedTemplates`     | `[]`                   | Named custom prompts surfaced as a popup dropdown.                    |
-| `styleGuide`         | `""`                   | Appended to every system prompt.                                      |
-| `protectedTerms`     | `""`                   | Comma / newline separated; preserved verbatim by the model.           |
-| `clickOutsideDismiss`| `true`                 | Closes the popup on window-blur (drag-safe).                          |
-| `autostart`          | `false`                | Mirrors the Windows per-user `Run` registry value.                    |
-| `originalExpanded`   | `false`                | Popup `Original` pane height preference.                              |
-| `popupAnchor`        | `mouse`                | Where the popup opens relative to the cursor.                         |
-| `hasOnboarded`       | `false`                | True after the first-run dialog is dismissed.                         |
-| `educational`        | `false`                | "Why this works" side-card.                                           |
-| `affirm`             | `false`                | "Note" side-card.                                                     |
-
-Theme preference is stored under `r3write.theme.v1` (`system` /
-`light` / `dark`) and applied pre-hydration to avoid flash. History
-lives under `r3write.history.v1` (last 20 entries).
+NSIS installer lands in `src-tauri/target/release/bundle/nsis/R3write_<version>_x64-setup.exe`. Code signing isn't wired up &mdash; Windows SmartScreen will warn on install until the build is signed (Azure Trusted Signing is the recommended modern path).
 
 ## Layout
 
 ```
 R3write/
-├── CHANGELOG.md
 ├── README.md
-├── package.json
-├── tsconfig.json
-├── vite.config.ts            # multi-page entry: index.html + quick-edit.html
-├── index.html                # main window — pre-hydration theme boot
-├── quick-edit.html           # popup window — pre-hydration theme boot
+├── CHANGELOG.md
+├── docs/
+│   ├── banner.png
+│   └── screenshots/             # the shots used above
+├── index.html                   # main window — pre-hydration theme boot
+├── quick-edit.html              # popup window — pre-hydration theme boot
+├── vite.config.ts               # multi-page input (main + quick-edit)
 ├── src/
-│   ├── entry-main.tsx        # renders <App />
-│   ├── entry-quick-edit.tsx  # renders <QuickEdit />
-│   ├── main.tsx              # App, QuickEdit, provider clients, Settings, dialogs
-│   ├── theme.ts              # useTheme() hook, View Transitions crossfade
-│   └── index.css             # Tailwind import, design tokens, prose styles
+│   ├── entry-main.tsx           # renders <App />
+│   ├── entry-quick-edit.tsx     # renders <QuickEdit />
+│   ├── main.tsx                 # App, QuickEdit, provider clients, dialogs
+│   ├── theme.ts                 # useTheme() hook, View Transitions crossfade
+│   └── index.css                # Tailwind + design tokens + prose styles
 └── src-tauri/
     ├── Cargo.toml
-    ├── build.rs
-    ├── tauri.conf.json       # two windows: main + quick-edit (own HTML)
+    ├── tauri.conf.json          # two windows: main + quick-edit
     ├── capabilities/default.json
-    ├── icons/{icon.png, icon.ico}
-    └── src/main.rs           # hotkeys + clipboard capture + paste-back +
-                              # autostart + per-provider keyring commands
+    └── src/main.rs              # hotkeys + capture + paste-back + autostart + keyring
 ```
-
-Conventions:
-- Flat folder structure; no per-feature directories until justified.
-- One React module (`src/main.tsx`) exports `App` and `QuickEdit`; the
-  two entry shims render them into their respective HTML.
-- **Every behavior change adds an entry to `CHANGELOG.md` under
-  `[Unreleased]`.**
 
 ## Known limitations
 
-- Quick-edit relies on the OS handing focus back to the previous app
-  in ~90 ms after the popup hides. Most apps cope; some Electron apps
-  with custom focus handling may not.
+- Quick-edit relies on the OS handing focus back to the previous app ~90 ms after the popup hides. Most apps cope; some Electron apps with custom focus handling may not.
 - No single-instance lock or auto-updater yet (autostart is shipped).
-- Code signing is not configured; Windows SmartScreen will warn until
-  the build is signed.
-- Popup is positioned near the mouse, not the text caret — keyboard-
-  only users may see the popup at an unrelated location on screen.
-  Caret-anchored positioning is tracked for a future release.
+- Code signing isn't configured; Windows SmartScreen will warn on install.
+- Popup is anchored to the mouse, not the text caret &mdash; keyboard-only users may see it land somewhere unrelated. Caret-anchored positioning is tracked for a future release.
+
+## Changelog
+
+Full history in [`CHANGELOG.md`](./CHANGELOG.md). Latest: **1.3.0** &mdash; Google Gemini provider and the provider tier taxonomy.
 
 ## License
 
