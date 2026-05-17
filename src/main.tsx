@@ -36,6 +36,7 @@ import {
   Square,
 } from "lucide-react";
 import { useTheme, useThemeFollower, type ThemeChoice } from "./theme";
+import { useLicense, LS_CHECKOUT_URL, type LicenseState, type UseLicense } from "./license";
 import "./index.css";
 import appIconUrl from "./icon.png";
 
@@ -1076,7 +1077,285 @@ async function probeProvider(
 
 type Phase = "idle" | "streaming" | "ready" | "error";
 
+function LicenseSettingsPanel({ license }: { license: UseLicense }) {
+  const { state } = license;
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (!key.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const next = await license.activate(key);
+      if (next.status !== "active") setErr(next.errorMessage || "Activation failed");
+      else setKey("");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (state.status === "active") {
+    return (
+      <div className="rounded-md border border-border bg-bg-subtle p-3">
+        <div className="flex items-center gap-2">
+          <CheckCircle2 size={16} className="text-r3w-add-fg" />
+          <h3 className="text-sm font-semibold text-fg">License active</h3>
+        </div>
+        <dl className="mt-3 grid grid-cols-[110px_minmax(0,1fr)] gap-y-1.5 text-[12px]">
+          <dt className="text-fg-subtle">Key</dt>
+          <dd className="truncate font-mono text-fg" title={state.keyMasked || ""}>
+            {state.keyMasked || "—"}
+          </dd>
+          {state.customerEmail && (
+            <>
+              <dt className="text-fg-subtle">Customer</dt>
+              <dd className="truncate text-fg">{state.customerEmail}</dd>
+            </>
+          )}
+          {state.productName && (
+            <>
+              <dt className="text-fg-subtle">Product</dt>
+              <dd className="truncate text-fg">{state.productName}</dd>
+            </>
+          )}
+          {state.activationLimit != null && (
+            <>
+              <dt className="text-fg-subtle">Activations</dt>
+              <dd className="text-fg">
+                {state.activationUsage ?? "?"} / {state.activationLimit}
+              </dd>
+            </>
+          )}
+          {state.lastValidatedAt && (
+            <>
+              <dt className="text-fg-subtle">Verified</dt>
+              <dd className="text-fg-muted">
+                {new Date(state.lastValidatedAt).toLocaleString()}
+              </dd>
+            </>
+          )}
+        </dl>
+        <div className="mt-3 flex items-center gap-2">
+          <button
+            type="button"
+            disabled={license.loading}
+            onClick={() => void license.refresh()}
+            className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-fg-muted transition hover:bg-bg-subtle hover:text-fg disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          >
+            {license.loading ? "Checking…" : "Re-validate"}
+          </button>
+          <button
+            type="button"
+            disabled={license.loading}
+            onClick={() => void license.deactivate()}
+            className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-danger transition hover:bg-danger-bg disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          >
+            Deactivate this machine
+          </button>
+        </div>
+        <p className="mt-3 text-[11px] text-fg-subtle">
+          Deactivating frees this seat so you can activate on another machine.
+        </p>
+      </div>
+    );
+  }
+
+  const showErr = err || (state.status === "invalid" ? state.errorMessage : null);
+  return (
+    <div className="rounded-md border border-border bg-bg-subtle p-3">
+      <div className="flex items-center gap-2">
+        <Sparkle size={14} className="text-accent" />
+        <h3 className="text-sm font-semibold text-fg">Activate R3write</h3>
+      </div>
+      <p className="mt-2 text-[12px] text-fg-muted">
+        Paste the license key from your Lemon Squeezy receipt.
+      </p>
+      <input
+        value={key}
+        onChange={(e) => setKey(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !busy) void submit();
+        }}
+        placeholder="XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+        spellCheck={false}
+        autoComplete="off"
+        className="mt-3 w-full rounded-md border border-border bg-bg px-3 py-1.5 text-sm font-mono text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
+      />
+      {showErr && (
+        <p role="alert" className="mt-2 break-words text-xs text-danger">
+          {showErr}
+        </p>
+      )}
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          type="button"
+          disabled={busy || !key.trim()}
+          onClick={() => void submit()}
+          className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg transition hover:bg-accent-hover disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          {busy ? "Activating…" : "Activate"}
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            void openUrl(LS_CHECKOUT_URL).catch((e) =>
+              console.error("[r3write] open checkout:", e),
+            )
+          }
+          className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-fg-muted transition hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          Buy a key
+          <ExternalLink size={12} className="opacity-70" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ActivationGate({
+  state,
+  loading,
+  onActivate,
+  variant = "main",
+}: {
+  state: LicenseState;
+  loading: boolean;
+  onActivate: (key: string) => Promise<LicenseState>;
+  variant?: "main" | "popup";
+}) {
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // First /validate still in flight and we have no cached state — render a
+  // neutral placeholder so a real licensee doesn't see the gate flash before
+  // the network probe resolves.
+  if (state.status === "unknown" && loading) {
+    return (
+      <div className="grid h-full place-items-center bg-bg text-fg-muted">
+        <div className="flex items-center gap-2 text-sm">
+          <Loader2 size={14} className="animate-spin" />
+          Checking license…
+        </div>
+      </div>
+    );
+  }
+
+  const submit = async () => {
+    if (!key.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const next = await onActivate(key);
+      if (next.status !== "active") setErr(next.errorMessage || "Activation failed");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const showErr = err || (state.status === "invalid" ? state.errorMessage : null);
+
+  return (
+    <div
+      className="grid h-full place-items-center bg-bg p-6 text-fg"
+      onMouseDown={(e) => {
+        if (e.button !== 0) return;
+        if (
+          (e.target as HTMLElement).closest(
+            "button, input, textarea, a, [data-no-drag]",
+          )
+        )
+          return;
+        void getCurrentWebviewWindow().startDragging();
+      }}
+    >
+      <div className="w-[min(420px,92vw)] rounded-xl border border-border bg-bg-elev p-6 shadow-[var(--shadow-md)]">
+        <div className="flex items-center gap-2">
+          <BrandMark size="lg" />
+          <h2 className="text-base font-semibold text-fg">Activate R3write</h2>
+        </div>
+        {variant === "popup" ? (
+          <>
+            <p className="mt-3 text-sm text-fg-muted">
+              R3write isn't activated. Open the main window to paste your license key.
+            </p>
+            <div className="mt-4 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() =>
+                  void openUrl(LS_CHECKOUT_URL).catch((e) =>
+                    console.error("[r3write] open checkout:", e),
+                  )
+                }
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-fg-muted transition hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              >
+                Buy a key
+                <ExternalLink size={12} className="opacity-70" />
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="mt-3 text-sm text-fg-muted">
+              Paste the license key from your Lemon Squeezy receipt to unlock R3write.
+            </p>
+            <input
+              autoFocus
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !busy) void submit();
+              }}
+              placeholder="XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+              spellCheck={false}
+              autoComplete="off"
+              className="mt-4 w-full rounded-md border border-border bg-bg px-3 py-2 text-sm font-mono text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent"
+            />
+            {showErr && (
+              <p role="alert" className="mt-2 break-words text-xs text-danger">
+                {showErr}
+              </p>
+            )}
+            <div className="mt-4 flex items-center gap-2">
+              <button
+                type="button"
+                disabled={busy || !key.trim()}
+                onClick={() => void submit()}
+                className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg transition hover:bg-accent-hover disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              >
+                {busy ? "Activating…" : "Activate"}
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  void openUrl(LS_CHECKOUT_URL).catch((e) =>
+                    console.error("[r3write] open checkout:", e),
+                  )
+                }
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-fg-muted transition hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              >
+                Buy a key
+                <ExternalLink size={12} className="opacity-70" />
+              </button>
+            </div>
+            <p className="mt-4 text-[11px] text-fg-subtle">
+              Already paid? The key is in your Lemon Squeezy receipt email.
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function App() {
+  const license = useLicense();
   const [settings, setSettings] = useState<OllamaSettings>(() => loadSettings());
   const [showSettings, setShowSettings] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
@@ -1179,6 +1458,18 @@ export function App() {
     void copy();
   }, []);
 
+  if (license.state.status !== "active") {
+    return (
+      <Tooltip.Provider delayDuration={250} skipDelayDuration={500}>
+        <ActivationGate
+          state={license.state}
+          loading={license.loading}
+          onActivate={license.activate}
+        />
+      </Tooltip.Provider>
+    );
+  }
+
   return (
     <Tooltip.Provider delayDuration={250} skipDelayDuration={500}>
       <div className="flex h-full flex-col bg-bg text-fg">
@@ -1277,6 +1568,7 @@ export function App() {
         <SettingsDialog
           open={showSettings}
           onOpenChange={setShowSettings}
+          license={license}
           settings={settings}
           onSave={(s) => {
             setSettings(s);
@@ -1799,12 +2091,14 @@ function SettingsDialog({
   settings,
   onSave,
   onClearApiKey,
+  license,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   settings: OllamaSettings;
   onSave: (s: OllamaSettings) => void;
   onClearApiKey: () => Promise<void>;
+  license: UseLicense;
 }) {
   const [draft, setDraft] = useState<OllamaSettings>(settings);
   // Lock the API key field once we have a saved key — user clicks Edit to
@@ -1823,7 +2117,7 @@ function SettingsDialog({
   const testAbortRef = useRef<AbortController | null>(null);
   const testCancelledRef = useRef(false);
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
-  type SettingsTab = "model" | "hotkey" | "feedback" | "templates" | "glossary" | "advanced" | "support";
+  type SettingsTab = "model" | "hotkey" | "feedback" | "templates" | "glossary" | "advanced" | "license" | "support";
   const [tab, setTab] = useState<SettingsTab>("model");
   const [newTemplateName, setNewTemplateName] = useState("");
   const [newTemplatePrompt, setNewTemplatePrompt] = useState("");
@@ -2061,6 +2355,7 @@ function SettingsDialog({
                           { id: "templates", label: "Templates" },
                           { id: "glossary", label: "Glossary" },
                           { id: "advanced", label: "Advanced" },
+                          { id: "license", label: "License" },
                           { id: "support", label: "Support" },
                         ] as { id: SettingsTab; label: string }[]
                       ).map((t) => (
@@ -2539,6 +2834,12 @@ function SettingsDialog({
                     </div>
                   )}
 
+                  {tab === "license" && (
+                    <div role="tabpanel" className="flex flex-col gap-3">
+                      <LicenseSettingsPanel license={license} />
+                    </div>
+                  )}
+
                   {tab === "support" && (
                     <div role="tabpanel" className="flex flex-col gap-3">
                       <div className="rounded-md border border-border bg-bg-subtle p-3">
@@ -2964,6 +3265,7 @@ const TurnItem = React.memo(
 
 export function QuickEdit() {
   useThemeFollower();
+  const license = useLicense();
   const [settings, setSettings] = useState<OllamaSettings>(() => loadSettings());
   // Only the request-shaping fields matter for the client; theming/hotkey
   // changes shouldn't tear it down mid-stream. The client itself is stateless
@@ -3354,6 +3656,19 @@ export function QuickEdit() {
     }
     return { added, removed };
   }, [phase, parsedLast.main, input]);
+
+  if (license.state.status !== "active") {
+    return (
+      <Tooltip.Provider delayDuration={250} skipDelayDuration={500}>
+        <ActivationGate
+          state={license.state}
+          loading={license.loading}
+          onActivate={license.activate}
+          variant="popup"
+        />
+      </Tooltip.Provider>
+    );
+  }
 
   return (
     <Tooltip.Provider delayDuration={250} skipDelayDuration={500}>

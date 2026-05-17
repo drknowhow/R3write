@@ -26,7 +26,8 @@
         { "url": "https://api.anthropic.com/*" },
         { "url": "https://api.groq.com/*" },
         { "url": "https://openrouter.ai/*" },
-        { "url": "https://generativelanguage.googleapis.com/*" }
+        { "url": "https://generativelanguage.googleapis.com/*" },
+        { "url": "https://api.lemonsqueezy.com/*" }
       ]
     },
     {
@@ -34,7 +35,8 @@
       "allow": [
         { "url": "https://buymeacoffee.com/*" },
         { "url": "https://www.buymeacoffee.com/*" },
-        { "url": "https://github.com/*" }
+        { "url": "https://github.com/*" },
+        { "url": "https://*.lemonsqueezy.com/*" }
       ]
     }
   ]

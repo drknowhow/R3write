@@ -42,7 +42,9 @@
 
 ## Quick install
 
-**[Download R3write →](https://drknowhow.lemonsqueezy.com/checkout/buy/627f5ad5-2aa2-4503-b79a-245e53abdbb3)** &nbsp; *(pay what you want, $5 minimum — you'll receive the installer and a license key after checkout)*
+**[Download R3write →](https://drknowhow.lemonsqueezy.com/checkout/buy/627f5ad5-2aa2-4503-b79a-245e53abdbb3)** &nbsp; *(pay what you want, $5 minimum — receipt includes the installer and a license key)*
+
+Run the installer, then paste the license key on first launch to activate. Without a key the app stays locked on the activation screen; with one it unlocks the main window and the quick-edit popup permanently on that machine.
 
 See the [release page](https://github.com/drknowhow/R3write/releases/latest) for release notes and changelog.
 
