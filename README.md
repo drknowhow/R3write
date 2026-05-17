@@ -13,6 +13,7 @@
 <p align="center">
   <a href="https://drknowhow.github.io/R3write/"><strong>Website &rarr;</strong></a> &nbsp;·&nbsp;
   <a href="https://github.com/drknowhow/R3write/releases/latest/download/R3write-setup.exe">Download</a> &nbsp;·&nbsp;
+  <a href="https://github.com/drknowhow/R3write/releases/latest">Release notes</a> &nbsp;·&nbsp;
   <a href="./CHANGELOG.md">Changelog</a>
 </p>
 
@@ -42,6 +43,8 @@
 ## Quick install
 
 **Download the installer** &nbsp;→&nbsp; [`R3write-setup.exe`](https://github.com/drknowhow/R3write/releases/latest/download/R3write-setup.exe) &nbsp; *(unsigned NSIS, ~3.6 MB — always the latest release)*
+
+See the [release page](https://github.com/drknowhow/R3write/releases/latest) for full notes, checksums, and older versions.
 
 **Or build from source:**
 
