@@ -222,7 +222,15 @@ R3write replaces the tab switch with a hotkey. Select text in any app, press <kb
 
 [@drknowhow](https://github.com/drknowhow). Issues, ideas, and PRs welcome on [GitHub](https://github.com/drknowhow/R3write/issues).
 
-If R3write saves you time, you can [buy me a coffee](https://buymeacoffee.com/drknowhow) or [sponsor on GitHub](https://github.com/sponsors/drknowhow).
+## Supporters
+
+R3write is free during beta thanks to people who tip and sponsor it. Sponsorship is what keeps the app free while it's finding its shape; it directly funds the next features on the roadmap (caret-anchored popup positioning, per-action model overrides, A/B regenerate, recipe chaining, eventual macOS support).
+
+[<img alt="Sponsor on GitHub" src="https://img.shields.io/badge/Sponsor%20on%20GitHub-%E2%99%A5-ea4aaa?style=for-the-badge&logo=github" />](https://github.com/sponsors/drknowhow) &nbsp; [<img alt="Buy me a coffee" src="https://img.shields.io/badge/Buy%20me%20a%20coffee-%E2%98%95-FFDD00?style=for-the-badge&logoColor=black" />](https://buymeacoffee.com/drknowhow)
+
+<!-- sponsors -->
+*Become the first listed sponsor — your name (and avatar, if you'd like) goes here.*
+<!-- sponsors -->
 
 ## Known limitations
 
