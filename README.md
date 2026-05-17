@@ -11,6 +11,12 @@
 </p>
 
 <p align="center">
+  <a href="https://drknowhow.github.io/R3write/"><strong>Website &rarr;</strong></a> &nbsp;·&nbsp;
+  <a href="https://github.com/drknowhow/R3write/releases/latest">Download</a> &nbsp;·&nbsp;
+  <a href="./CHANGELOG.md">Changelog</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/drknowhow/R3write/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/drknowhow/R3write?label=download&color=7c3aed"/></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue"/>
   <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24c8db"/>
@@ -188,6 +194,25 @@ R3write/
     ├── capabilities/default.json
     └── src/main.rs              # hotkeys + capture + paste-back + autostart + keyring
 ```
+
+## About
+
+R3write started as a personal itch: every time I needed to clean up a paragraph, tighten a Slack message, or rewrite a sentence I'd just typed, I'd <kbd>Alt</kbd>+<kbd>Tab</kbd> into a chatbot, paste the text, copy the response back, switch back, and lose my train of thought. For the small rewrites I do constantly, a 30-second chat is overkill.
+
+R3write replaces the tab switch with a hotkey. Select text in any app, press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>G</kbd>, pick an action, paste back. The rewrite happens where you're already typing.
+
+### Principles
+
+- **Local by default.** The free path uses Ollama on your machine. No network, no key, no quota.
+- **Bring your own key.** Every cloud provider uses your API key directly. R3write doesn't proxy anything through its own server. There *is* no R3write server.
+- **No telemetry.** R3write doesn't phone home, doesn't track usage, doesn't collect analytics.
+- **Your data stays where you put it.** Selections go to the provider you configured. That's it.
+
+### Built by
+
+[@drknowhow](https://github.com/drknowhow). Issues, ideas, and PRs welcome on [GitHub](https://github.com/drknowhow/R3write/issues).
+
+If R3write saves you time, you can [buy me a coffee](https://buymeacoffee.com/drknowhow) or [sponsor on GitHub](https://github.com/sponsors/drknowhow).
 
 ## Known limitations
 

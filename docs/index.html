@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>R3write — Inline AI rewrite for Windows</title>
+    <meta
+      name="description"
+      content="Select text in any Windows app, press Ctrl+Alt+G, pick an action, paste the rewrite back. Local by default with free Ollama; multi-provider for speed — Gemini, OpenAI, Anthropic, Groq, OpenRouter, Ollama Cloud."
+    />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <link rel="canonical" href="https://drknowhow.github.io/R3write/" />
+    <meta property="og:title" content="R3write — Inline AI rewrite for Windows" />
+    <meta
+      property="og:description"
+      content="One hotkey, any app. Free local Ollama or multi-provider cloud. Your keys, your data."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://drknowhow.github.io/R3write/" />
+    <meta property="og:image" content="https://drknowhow.github.io/R3write/screenshots/hero-popup.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="container header-row">
+        <a class="brand" href="#top">
+          <img src="banner.png" alt="" class="brand-mark" />
+          <span class="brand-name">R3write</span>
+        </a>
+        <nav class="nav">
+          <a href="#features">Features</a>
+          <a href="#providers">Providers</a>
+          <a href="#about">About</a>
+          <a class="nav-cta" href="https://github.com/drknowhow/R3write/releases/latest">Download</a>
+          <a class="nav-ghost" href="https://github.com/drknowhow/R3write" aria-label="GitHub repository">GitHub →</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="container">
+          <p class="eyebrow">v1.3.0 · Windows 10/11</p>
+          <h1 class="hero-title">
+            Inline AI rewrite,<br />without leaving the app you're in.
+          </h1>
+          <p class="hero-sub">
+            Select text anywhere. Press <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>G</kbd>. Pick an action.
+            Paste the result back. Free by default with local Ollama; multi-provider for speed when you want it.
+          </p>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="https://github.com/drknowhow/R3write/releases/latest">
+              Download for Windows
+              <span class="btn-sub">NSIS installer · ~3.6&nbsp;MB</span>
+            </a>
+            <a class="btn btn-ghost" href="https://github.com/drknowhow/R3write">
+              View source on GitHub
+            </a>
+          </div>
+          <p class="hero-note">
+            Unsigned installer — SmartScreen will show "Unknown publisher" until the build is signed.
+          </p>
+        </div>
+        <div class="container hero-image">
+          <img
+            src="screenshots/hero-popup.png"
+            alt="R3write popup mid-rewrite over a Word document, with the streamed Improve rewrite, +12 -6 words / first-token latency stats, follow-up tone chips, and accept / regenerate / reject pills"
+            loading="eager"
+          />
+          <p class="hero-caption">
+            Select text in Word, the popup streams an <strong>Improve</strong> rewrite, you press <kbd>Enter</kbd>.
+            Every keystroke without leaving the source app.
+          </p>
+        </div>
+      </section>
+
+      <section class="value">
+        <div class="container value-grid">
+          <div class="value-card">
+            <h3>Inline, not a tab</h3>
+            <p>No window-switching. The rewrite happens where you're already typing.</p>
+          </div>
+          <div class="value-card">
+            <h3>Free by default</h3>
+            <p>Local Ollama is the zero-cost path — no key, no quota, no network.</p>
+          </div>
+          <div class="value-card">
+            <h3>Bring your own key</h3>
+            <p>Cloud providers use your own API key, stored per-provider in Windows Credential Manager.</p>
+          </div>
+          <div class="value-card">
+            <h3>Word-level diff</h3>
+            <p>See exactly what changed every time. Green additions, red deletions, on the same surface.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="features">
+        <div class="container">
+          <h2 class="section-title">What's in it</h2>
+
+          <article class="feature">
+            <div class="feature-text">
+              <h3>One hotkey, any app</h3>
+              <p>
+                Word, Slack, browsers, code editors, terminals — anywhere there's text. The popup opens
+                at your cursor with <em>Improve</em>, <em>Fix grammar</em>, <em>Shorten</em>, <em>Expand</em>,
+                <em>Tone</em>, <em>Prompt</em>, and <em>Custom</em> actions. Each has a numeric shortcut
+                (<kbd>1</kbd>–<kbd>4</kbd>, <kbd>C</kbd>) so you never need the mouse.
+              </p>
+              <p>
+                Repeat the same action on a new selection with <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>G</kbd>
+                — no picker.
+              </p>
+            </div>
+            <figure class="feature-figure">
+              <img src="screenshots/popup-actions.png" alt="The popup action picker with all seven chips visible" loading="lazy" />
+            </figure>
+          </article>
+
+          <article class="feature reverse">
+            <div class="feature-text">
+              <h3>Word-level diff</h3>
+              <p>
+                Toggle the rewrite into <strong>Diff</strong> view to see exactly what changed:
+                green for additions, red strike-through for deletions, with a running <code>+N -M words</code>
+                tally and the first-token latency.
+              </p>
+              <p>
+                Sanitised for both light and dark themes. Same surface as the rewrite — no extra panel,
+                no separate compare view.
+              </p>
+            </div>
+            <figure class="feature-figure">
+              <img src="screenshots/popup-diff.png" alt="The popup in Diff view showing green word additions and red strike-through deletions" loading="lazy" />
+            </figure>
+          </article>
+
+          <article class="feature">
+            <div class="feature-text">
+              <h3>Your providers, your keys</h3>
+              <p>
+                Switch the active model from a single picker. Free options up top, paid below.
+                Each provider has its own keyring entry — switching providers doesn't blow away
+                the others' keys.
+              </p>
+              <p>
+                A live status pill in the header polls the active provider every 60&nbsp;s. Green when
+                reachable, red when not.
+              </p>
+            </div>
+            <figure class="feature-figure">
+              <img src="screenshots/settings-providers.png" alt="Settings dialog with the Provider dropdown open showing all seven providers and their tier tags" loading="lazy" />
+            </figure>
+          </article>
+
+          <article class="feature reverse">
+            <div class="feature-text">
+              <h3>History at a glance</h3>
+              <p>
+                Last 20 rewrites, each with the action, time, word-level diff, and a one-click
+                <em>Revert</em> (copies the original back to your clipboard for paste-over).
+              </p>
+              <p>
+                Closing the main window keeps R3write running in the system tray so the global
+                hotkey still fires.
+              </p>
+            </div>
+            <figure class="feature-figure">
+              <img src="screenshots/main-window.png" alt="The main window history list with three Improve rewrites and rich diff highlighting" loading="lazy" />
+            </figure>
+          </article>
+        </div>
+      </section>
+
+      <section id="providers" class="providers">
+        <div class="container">
+          <h2 class="section-title">Pick a provider</h2>
+          <p class="section-sub">
+            Default for new installs is <strong>Ollama Cloud</strong>. Switch anytime in
+            <code>Settings → Model</code>. Legacy <code>cloud</code> / <code>local</code> settings
+            from earlier versions migrate automatically.
+          </p>
+          <div class="providers-table-wrap">
+            <table class="providers-table">
+              <thead>
+                <tr>
+                  <th>Provider</th>
+                  <th>Tier</th>
+                  <th>Default model</th>
+                  <th>Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>Local Ollama</strong></td>
+                  <td><span class="tier tier-free">Free</span></td>
+                  <td><code>llama3.2</code></td>
+                  <td>Runs on your machine, no key required.</td>
+                </tr>
+                <tr>
+                  <td><strong>Ollama Cloud</strong></td>
+                  <td><span class="tier tier-freekey">Free tier · BYO key</span></td>
+                  <td><code>gemma4:31b-cloud</code></td>
+                  <td>Default for new installs.</td>
+                </tr>
+                <tr>
+                  <td><strong>Google Gemini</strong></td>
+                  <td><span class="tier tier-freekey">Free tier · BYO key</span></td>
+                  <td><code>gemini-2.5-flash</code></td>
+                  <td>Most generous free tier of any major cloud LLM; very fast.</td>
+                </tr>
+                <tr>
+                  <td><strong>Groq</strong></td>
+                  <td><span class="tier tier-freekey">Free tier · BYO key</span></td>
+                  <td><code>llama-3.3-70b-versatile</code></td>
+                  <td>Fastest streaming token rate.</td>
+                </tr>
+                <tr>
+                  <td><strong>OpenRouter</strong></td>
+                  <td><span class="tier tier-freekey">Free tier · BYO key</span></td>
+                  <td><code>anthropic/claude-sonnet-4</code></td>
+                  <td>Aggregator; many models behind one key.</td>
+                </tr>
+                <tr>
+                  <td><strong>OpenAI</strong></td>
+                  <td><span class="tier tier-paid">BYO key</span></td>
+                  <td><code>gpt-4.1-mini</code></td>
+                  <td>Paid only.</td>
+                </tr>
+                <tr>
+                  <td><strong>Anthropic</strong></td>
+                  <td><span class="tier tier-paid">BYO key</span></td>
+                  <td><code>claude-sonnet-4-6</code></td>
+                  <td>Paid only.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="about" class="about">
+        <div class="container about-grid">
+          <div class="about-text">
+            <h2 class="section-title">About R3write</h2>
+            <p>
+              R3write started as a personal itch: every time I wanted to clean up a paragraph,
+              tighten a Slack message, or rewrite a sentence I'd just typed, I'd
+              <kbd>Alt</kbd>+<kbd>Tab</kbd> into a chatbot, paste, copy the response, switch back,
+              and lose my train of thought. That tab-switching tax adds up — and for the small
+              rewrites I do constantly, a 30-second chat is overkill.
+            </p>
+            <p>
+              R3write replaces the tab switch with a hotkey. Select text in any app, press
+              <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>G</kbd>, pick an action, paste back. The rewrite
+              happens where you're already typing.
+            </p>
+
+            <h3>Principles</h3>
+            <ul class="principles">
+              <li>
+                <strong>Local by default.</strong> The free path uses Ollama on your machine.
+                No network, no key, no quota.
+              </li>
+              <li>
+                <strong>Bring your own key.</strong> Every cloud provider uses your API key
+                directly. R3write doesn't proxy anything through its own server. There <em>is</em>
+                no R3write server.
+              </li>
+              <li>
+                <strong>No telemetry.</strong> R3write doesn't phone home, doesn't track usage,
+                doesn't collect analytics.
+              </li>
+              <li>
+                <strong>Your data stays where you put it.</strong> Selections go to the provider
+                you configured. That's it.
+              </li>
+            </ul>
+          </div>
+
+          <aside class="about-side">
+            <div class="about-card">
+              <h4>Built by</h4>
+              <p>
+                <a href="https://github.com/drknowhow" target="_blank" rel="noopener">@drknowhow</a>.
+                Issues, ideas, and PRs welcome.
+              </p>
+            </div>
+            <div class="about-card">
+              <h4>Tech</h4>
+              <p>
+                Tauri 2 (Rust) shell, React 18 + TypeScript + Vite + Tailwind v4 frontend.
+                Multi-page Vite build so each window ships only what it needs.
+              </p>
+            </div>
+            <div class="about-card">
+              <h4>License</h4>
+              <p>TBD. Source is public on <a href="https://github.com/drknowhow/R3write">GitHub</a>.</p>
+            </div>
+            <div class="about-card support-card">
+              <h4>Support R3write</h4>
+              <p>If it saves you time, a small tip helps fund the next release.</p>
+              <div class="support-buttons">
+                <a class="btn btn-bmc" href="https://buymeacoffee.com/drknowhow" target="_blank" rel="noopener">
+                  ☕ Buy me a coffee
+                </a>
+                <a class="btn btn-sponsor" href="https://github.com/sponsors/drknowhow" target="_blank" rel="noopener">
+                  ♥ Sponsor on GitHub
+                </a>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="install">
+        <div class="container install-grid">
+          <div>
+            <h2 class="section-title">Get started in 30 seconds</h2>
+            <ol class="install-steps">
+              <li>Download and run the installer.</li>
+              <li>On first launch, the onboarding dialog walks you through provider setup.</li>
+              <li>Select text in any app and press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>G</kbd>.</li>
+              <li>Pick an action. Accept &amp; paste.</li>
+            </ol>
+            <div class="cta-row">
+              <a class="btn btn-primary" href="https://github.com/drknowhow/R3write/releases/latest">
+                Download for Windows
+              </a>
+              <a class="btn btn-ghost" href="https://github.com/drknowhow/R3write#quick-install">
+                Build from source →
+              </a>
+            </div>
+          </div>
+          <div class="install-side">
+            <h3>Or build from source</h3>
+            <pre><code>git clone https://github.com/drknowhow/R3write
+cd R3write
+npm install
+npm run tauri:dev</code></pre>
+            <p class="install-note">
+              Prereqs: Windows 10/11 · Node ≥ 20 · Rust stable + MSVC Build Tools · WebView2.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-row">
+        <div class="footer-brand">
+          <img src="banner.png" alt="" />
+          <span>R3write</span>
+        </div>
+        <nav class="footer-nav">
+          <a href="https://github.com/drknowhow/R3write">GitHub</a>
+          <a href="https://github.com/drknowhow/R3write/blob/main/CHANGELOG.md">Changelog</a>
+          <a href="https://github.com/drknowhow/R3write/releases">Releases</a>
+          <a href="https://github.com/drknowhow/R3write/issues">Issues</a>
+          <a href="https://buymeacoffee.com/drknowhow">Tip</a>
+          <a href="https://github.com/sponsors/drknowhow">Sponsor</a>
+        </nav>
+        <p class="footer-meta">
+          © <span id="year"></span> <a href="https://github.com/drknowhow">drknowhow</a> · Built with Tauri 2.
+        </p>
+      </div>
+    </footer>
+
+    <script>
+      document.getElementById("year").textContent = new Date().getFullYear();
+    </script>
+  </body>
+</html>
