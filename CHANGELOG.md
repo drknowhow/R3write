@@ -6,6 +6,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-05-17
+
 ### Added
 - **Lemon Squeezy license activation.** Hard gate on the main window and the quick-edit popup until a valid license key is entered. New **License** tab in Settings shows status (masked key, customer email, activations used / limit, last-validated timestamp) with **Re-validate** and **Deactivate this machine** controls. Activation calls `api.lemonsqueezy.com/v1/licenses/activate`; subsequent launches call `/validate`. License key and Lemon Squeezy `instance_id` live in Windows Credential Manager alongside the provider API keys. Offline `/validate` failures fall back to the cached active state so a paid user with a dropped connection isn't locked out; an explicit invalid response (refund, manual revoke) re-shows the gate.
 

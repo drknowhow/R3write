@@ -1,6 +1,6 @@
 [package]
 name = "r3write"
-version = "1.3.0"
+version = "1.4.0"
 description = "Inline AI text editor for Windows."
 edition = "2021"
 rust-version = "1.77"
