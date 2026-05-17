@@ -6,6 +6,17 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-05-17
+
+### Added
+- **Google Gemini provider.** Streams via `:streamGenerateContent?alt=sse` against the Generative Language API. Default model `gemini-2.5-flash` (most generous free tier of any major cloud LLM, no card required). Auth via `x-goog-api-key`; key stored in its own keyring entry like the other providers.
+- **Provider tier taxonomy.** Every provider in Settings → Model is now tagged:
+  - `Free` — Local Ollama (runs on your machine, no key).
+  - `Free tier · BYO key` — Ollama Cloud, Gemini, Groq, OpenRouter (your own key, provider offers a free quota).
+  - `BYO key` — OpenAI, Anthropic (your own key, paid to the provider).
+
+  A one-line caption under the picker explains the three tiers. Provider dropdown is reordered so Free / Free-tier options surface first; the default remains Ollama Cloud for new installs.
+
 ## [1.2.1] - 2026-05-16
 
 ### Fixed

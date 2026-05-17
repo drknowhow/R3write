@@ -444,28 +444,59 @@ function prettyKeyCode(code: string): string {
 type Provider =
   | "ollama-cloud"
   | "ollama-local"
+  | "gemini"
   | "openai"
   | "anthropic"
   | "groq"
   | "openrouter";
 
+// "free"      — runs on the user's hardware, no key required.
+// "free-tier" — cloud provider with a free quota; BYO key.
+// "byok"      — cloud provider, paid-only; BYO key.
+type ProviderTier = "free" | "free-tier" | "byok";
+
 const PROVIDER_LABELS: Record<Provider, string> = {
   "ollama-cloud": "Ollama Cloud",
   "ollama-local": "Local Ollama",
-  "openai": "OpenAI",
-  "anthropic": "Anthropic",
-  "groq": "Groq",
-  "openrouter": "OpenRouter",
+  "gemini":       "Google Gemini",
+  "openai":       "OpenAI",
+  "anthropic":    "Anthropic",
+  "groq":         "Groq",
+  "openrouter":   "OpenRouter",
 };
 
-const PROVIDER_DEFAULTS: Record<Provider, { baseUrl: string; model: string; needsKey: boolean; keyHint?: string }> = {
-  "ollama-cloud":   { baseUrl: "https://ollama.com",      model: "gemma4:31b-cloud",        needsKey: true,  keyHint: "ollama-…" },
-  "ollama-local":   { baseUrl: "http://localhost:11434",  model: "llama3.2",                needsKey: false },
-  "openai":         { baseUrl: "https://api.openai.com",  model: "gpt-4.1-mini",            needsKey: true,  keyHint: "sk-…" },
-  "anthropic":      { baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-6",     needsKey: true,  keyHint: "sk-ant-…" },
-  "groq":           { baseUrl: "https://api.groq.com",    model: "llama-3.3-70b-versatile", needsKey: true,  keyHint: "gsk_…" },
-  "openrouter":     { baseUrl: "https://openrouter.ai",   model: "anthropic/claude-sonnet-4", needsKey: true, keyHint: "sk-or-…" },
+const PROVIDER_DEFAULTS: Record<
+  Provider,
+  { baseUrl: string; model: string; needsKey: boolean; tier: ProviderTier; keyHint?: string }
+> = {
+  "ollama-cloud": { baseUrl: "https://ollama.com", model: "gemma4:31b-cloud", needsKey: true, tier: "free-tier", keyHint: "ollama-…" },
+  "ollama-local": { baseUrl: "http://localhost:11434", model: "llama3.2", needsKey: false, tier: "free" },
+  "gemini":       { baseUrl: "https://generativelanguage.googleapis.com", model: "gemini-2.5-flash", needsKey: true, tier: "free-tier", keyHint: "AIza…" },
+  "openai":       { baseUrl: "https://api.openai.com", model: "gpt-4.1-mini", needsKey: true, tier: "byok", keyHint: "sk-…" },
+  "anthropic":    { baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-6", needsKey: true, tier: "byok", keyHint: "sk-ant-…" },
+  "groq":         { baseUrl: "https://api.groq.com", model: "llama-3.3-70b-versatile", needsKey: true, tier: "free-tier", keyHint: "gsk_…" },
+  "openrouter":   { baseUrl: "https://openrouter.ai", model: "anthropic/claude-sonnet-4", needsKey: true, tier: "free-tier", keyHint: "sk-or-…" },
 };
+
+// Display order for the Settings → Provider dropdown. Free / free-tier on top
+// so users land on a zero-cost path; default (ollama-cloud) is first within
+// that group so it stays the obvious choice for new installs.
+const PROVIDER_ORDER: Provider[] = [
+  "ollama-cloud",
+  "ollama-local",
+  "gemini",
+  "groq",
+  "openrouter",
+  "openai",
+  "anthropic",
+];
+
+function providerTierLabel(p: Provider): string {
+  const t = PROVIDER_DEFAULTS[p].tier;
+  if (t === "free") return "Free";
+  if (t === "free-tier") return "Free tier · BYO key";
+  return "BYO key";
+}
 
 interface SavedTemplate {
   id: string;
@@ -638,6 +669,10 @@ function isOllamaStyle(p: Provider): boolean {
 
 function isOpenAIStyle(p: Provider): boolean {
   return p === "openai" || p === "groq" || p === "openrouter";
+}
+
+function isGemini(p: Provider): boolean {
+  return p === "gemini";
 }
 
 // ---------- Streaming clients ----------
@@ -889,9 +924,77 @@ class AnthropicClient implements LLMClient {
   }
 }
 
+// Gemini's Generative Language API takes the system prompt out-of-band via
+// `systemInstruction`, names the assistant role `model`, and wraps text in a
+// `parts: [{text}]` envelope. Streams SSE on `:streamGenerateContent?alt=sse`.
+class GeminiClient implements LLMClient {
+  constructor(private settings: OllamaSettings) {}
+
+  async *chat(
+    messages: ChatMessage[],
+    opts?: { signal?: AbortSignal },
+  ): AsyncIterable<string> {
+    const apiKey = this.settings.apiKey || (await loadApiKey(this.settings.provider));
+    if (!apiKey) throw new Error("Gemini: API key not set");
+    const system = messages.find((m) => m.role === "system")?.content;
+    const contents = messages
+      .filter((m) => m.role !== "system")
+      .map((m) => ({
+        role: m.role === "assistant" ? "model" : "user",
+        parts: [{ text: m.content }],
+      }));
+    const base = this.settings.baseUrl.replace(/\/$/, "");
+    const url = `${base}/v1beta/models/${encodeURIComponent(this.settings.model)}:streamGenerateContent?alt=sse`;
+    const res = await tauriFetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey,
+        Origin: originFor(this.settings.baseUrl),
+      },
+      body: JSON.stringify({
+        contents,
+        ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+        generationConfig: { maxOutputTokens: 4096 },
+      }),
+      signal: opts?.signal,
+    });
+
+    if (!res.ok || !res.body) {
+      throw new Error(`Gemini HTTP ${res.status}: ${await res.text().catch(() => "")}`);
+    }
+
+    for await (const event of parseSse(res.body, opts?.signal)) {
+      const obj = event as {
+        candidates?: { content?: { parts?: { text?: string }[] } }[];
+        error?: { message?: string };
+      };
+      if (obj.error) throw new Error(obj.error.message ?? "Gemini error");
+      const parts = obj.candidates?.[0]?.content?.parts;
+      if (parts) {
+        for (const p of parts) {
+          if (p.text) yield p.text;
+        }
+      }
+    }
+  }
+
+  async *rewrite(input: string, action: ActionId, opts?: RewriteOptions): AsyncIterable<string> {
+    const instruction = actionInstruction(action, opts?.customPrompt);
+    yield* this.chat(
+      [
+        { role: "system", content: buildSystemPrompt(this.settings) },
+        { role: "user", content: `${instruction}\n\nText:\n${input}` },
+      ],
+      { signal: opts?.signal },
+    );
+  }
+}
+
 function makeClient(settings: OllamaSettings): LLMClient {
   if (isOpenAIStyle(settings.provider)) return new OpenAIStyleClient(settings);
   if (settings.provider === "anthropic") return new AnthropicClient(settings);
+  if (isGemini(settings.provider)) return new GeminiClient(settings);
   return new OllamaClient(settings);
 }
 
@@ -914,6 +1017,20 @@ async function probeProvider(
       headers,
       signal,
     });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return Math.round(performance.now() - started);
+  }
+  if (isGemini(settings.provider)) {
+    const apiKey = settings.apiKey || (await loadApiKey(settings.provider));
+    if (!apiKey) throw new Error("API key not set");
+    const res = await tauriFetch(
+      `${settings.baseUrl.replace(/\/$/, "")}/v1beta/models`,
+      {
+        method: "GET",
+        headers: { "x-goog-api-key": apiKey, Origin: originFor(settings.baseUrl) },
+        signal,
+      },
+    );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return Math.round(performance.now() - started);
   }
@@ -1986,12 +2103,15 @@ function SettingsDialog({
                       }}
                       className={inputCls}
                     >
-                      {(Object.keys(PROVIDER_LABELS) as Provider[]).map((p) => (
+                      {PROVIDER_ORDER.map((p) => (
                         <option key={p} value={p}>
-                          {PROVIDER_LABELS[p]}
+                          {PROVIDER_LABELS[p]} — {providerTierLabel(p)}
                         </option>
                       ))}
                     </select>
+                    <p className="mt-1 text-[11px] text-fg-subtle">
+                      <span className="font-medium text-fg-muted">Free</span> runs on your machine (Ollama). <span className="font-medium text-fg-muted">Free tier · BYO key</span> means you bring your own API key and the provider has a free quota. <span className="font-medium text-fg-muted">BYO key</span> means usage is paid to that provider directly.
+                    </p>
                   </Field>
 
                   <Field label="Base URL">
