@@ -169,6 +169,14 @@ npm run tauri:build
 
 NSIS installer lands in `src-tauri/target/release/bundle/nsis/R3write_<version>_x64-setup.exe`. Code signing isn't wired up &mdash; Windows SmartScreen will warn on install until the build is signed (Azure Trusted Signing is the recommended modern path).
 
+For a full release cut (version bump in all three manifests, CHANGELOG promote, build, tag, push, GitHub release with both versioned and stable-named installers attached), use the helper:
+
+```bash
+scripts/release.sh 1.4.0
+```
+
+Run it from anywhere inside the repo. It refuses to proceed unless you're on `main`, the working tree is clean, you're in sync with origin, the tag doesn't already exist, and the `[Unreleased]` section in `CHANGELOG.md` has content (which becomes the release notes verbatim).
+
 ## Layout
 
 ```
