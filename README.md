@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.png" alt="R3write" width="720" />
+  <img src="docs/icon.png" alt="R3write icon" width="140" />
 </p>
 
 <h1 align="center">R3write</h1>
@@ -177,7 +177,7 @@ R3write/
 ├── README.md
 ├── CHANGELOG.md
 ├── docs/
-│   ├── banner.png
+│   ├── icon.png
 │   └── screenshots/             # the shots used above
 ├── index.html                   # main window — pre-hydration theme boot
 ├── quick-edit.html              # popup window — pre-hydration theme boot
