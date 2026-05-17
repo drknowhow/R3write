@@ -17,7 +17,6 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/drknowhow/R3write/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/drknowhow/R3write?label=download&color=7c3aed"/></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue"/>
   <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24c8db"/>
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Beta%20%C2%B7%20Free-7c3aed"/></a>
