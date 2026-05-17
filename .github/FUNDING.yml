@@ -1,0 +1,5 @@
+# Adds a "Sponsor" button to the R3write repo's About sidebar.
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+
+github: [drknowhow]
+custom: ["https://buymeacoffee.com/drknowhow"]
