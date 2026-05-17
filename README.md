@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://drknowhow.github.io/R3write/"><strong>Website &rarr;</strong></a> &nbsp;·&nbsp;
-  <a href="https://github.com/drknowhow/R3write/releases/latest/download/R3write-setup.exe">Download</a> &nbsp;·&nbsp;
+  <a href="https://drknowhow.lemonsqueezy.com/checkout/buy/627f5ad5-2aa2-4503-b79a-245e53abdbb3"><strong>Download</strong></a> &nbsp;·&nbsp;
   <a href="https://github.com/drknowhow/R3write/releases/latest">Release notes</a> &nbsp;·&nbsp;
   <a href="./CHANGELOG.md">Changelog</a>
 </p>
@@ -20,7 +20,7 @@
 <p align="center">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue"/>
   <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24c8db"/>
-  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Beta%20%C2%B7%20Free-7c3aed"/></a>
+  <a href="https://drknowhow.lemonsqueezy.com/checkout/buy/627f5ad5-2aa2-4503-b79a-245e53abdbb3"><img alt="License" src="https://img.shields.io/badge/license-Beta%20%C2%B7%20Pay%20what%20you%20want-7c3aed"/></a>
 </p>
 
 ---
@@ -42,9 +42,9 @@
 
 ## Quick install
 
-**Download the installer** &nbsp;→&nbsp; [`R3write-setup.exe`](https://github.com/drknowhow/R3write/releases/latest/download/R3write-setup.exe) &nbsp; *(unsigned NSIS, ~3.6 MB — always the latest release)*
+**[Download R3write →](https://drknowhow.lemonsqueezy.com/checkout/buy/627f5ad5-2aa2-4503-b79a-245e53abdbb3)** &nbsp; *(pay what you want, $5 minimum — you'll receive the installer and a license key after checkout)*
 
-See the [release page](https://github.com/drknowhow/R3write/releases/latest) for full notes, checksums, and older versions.
+See the [release page](https://github.com/drknowhow/R3write/releases/latest) for release notes and changelog.
 
 **Or build from source:**
 
@@ -172,7 +172,7 @@ npm run tauri:build
 
 NSIS installer lands in `src-tauri/target/release/bundle/nsis/R3write_<version>_x64-setup.exe`. Code signing isn't wired up &mdash; Windows SmartScreen will warn on install until the build is signed (Azure Trusted Signing is the recommended modern path).
 
-For a full release cut (version bump in all three manifests, CHANGELOG promote, build, tag, push, GitHub release with both versioned and stable-named installers attached), use the helper:
+For a full release cut (version bump in all three manifests, CHANGELOG promote, build, tag, push, and GitHub release with notes), use the helper. The installer is distributed via [Lemon Squeezy](https://drknowhow.lemonsqueezy.com) — upload it there after each build.
 
 ```bash
 scripts/release.sh 1.4.0
@@ -245,6 +245,6 @@ Full history in [`CHANGELOG.md`](./CHANGELOG.md). Latest: **1.3.0** &mdash; Goog
 
 ## License
 
-R3write is in **beta** and free to use during the beta period for personal and evaluation purposes — see [`LICENSE`](./LICENSE) for the full terms.
+R3write is in **beta** — see [`LICENSE`](./LICENSE) for the full terms.
 
-Source is published on GitHub for transparency and contribution; it is not released under an open-source license at this time. Once the app exits beta, R3write may move to a one-time support payment per major version, with prior major versions remaining usable and beta builds remaining free.
+Source is published on GitHub for transparency and contribution; it is not released under an open-source license at this time. R3write uses a pay-what-you-want model ($5 minimum) per major version; once a version is purchased it remains yours.

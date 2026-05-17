@@ -14,9 +14,9 @@
 #   4. Extracts the new CHANGELOG section as release notes.
 #   5. Builds the Tauri NSIS installer.
 #   6. Commits the version bump, tags v<version>, pushes both.
-#   7. Creates the GitHub release with BOTH the versioned and stable-named
-#      installers attached so /releases/latest/download/R3write-setup.exe
-#      keeps working across releases.
+#   7. Creates the GitHub release with notes only (no installer attached).
+#      After this completes, upload the installer to Lemon Squeezy manually:
+#      https://app.lemonsqueezy.com/products/1063778
 #
 # Requires: bash, git, gh, npm, cargo, sed, awk on PATH.
 
@@ -115,7 +115,7 @@ mv CHANGELOG.md.tmp CHANGELOG.md
 # ----- 4. Extract release notes ------------------------------------------
 
 NOTES_FILE="$(mktemp -t r3write-release-notes-XXXXXX.md)"
-trap 'rm -f "$NOTES_FILE" R3write-setup.exe' EXIT
+trap 'rm -f "$NOTES_FILE"' EXIT
 
 awk -v ver="$VERSION" -v date="$DATE" '
   $0 == "## [" ver "] - " date { in_sec = 1; next }
@@ -155,22 +155,19 @@ step "Pushing main + tag..."
 git push origin main
 git push origin "$TAG"
 
-# ----- 7. Create GitHub release with both assets --------------------------
+# ----- 7. Create GitHub release (notes only — installer via Lemon Squeezy) --------
 
 step "Creating GitHub release..."
 
-cp "$INSTALLER" R3write-setup.exe
-
 gh release create "$TAG" \
-  "$INSTALLER" \
-  "R3write-setup.exe" \
   --title "R3write $VERSION" \
   --notes-file "$NOTES_FILE" \
   --latest
-
-rm -f R3write-setup.exe
 
 # ----- Done ---------------------------------------------------------------
 
 printf '\n\033[1;32m✓\033[0m Released %s\n' "$VERSION"
 printf '  https://github.com/drknowhow/R3write/releases/tag/%s\n' "$TAG"
+printf '\n\033[1;33m→\033[0m Upload the installer to Lemon Squeezy:\n'
+printf '  https://app.lemonsqueezy.com/products/1063778\n'
+printf '  File: %s\n' "$INSTALLER"
