@@ -222,10 +222,20 @@ fn trigger_quick_edit(app: &AppHandle, repeat: bool) -> Result<(), String> {
             "[r3write] quick-edit captured (repeat={repeat}, selection_len={})",
             captured.chars().count()
         );
-        if let Some(w) = app_handle.get_webview_window(QUICK_EDIT_LABEL) {
-            let _ = w.set_focus();
-            let event = if repeat { "captured-text-repeat" } else { "captured-text" };
-            let _ = w.emit(event, captured);
+        // Hand back to the GUI thread for the focus dance + event emit. The
+        // GUI thread owns the popup HWND, and Windows' foreground rules are
+        // far more lenient when SetForegroundWindow is called from the window
+        // owner's thread than from a worker thread.
+        let app_for_main = app_handle.clone();
+        let dispatch = app_handle.run_on_main_thread(move || {
+            if let Some(w) = app_for_main.get_webview_window(QUICK_EDIT_LABEL) {
+                force_focus(&w);
+                let event = if repeat { "captured-text-repeat" } else { "captured-text" };
+                let _ = w.emit(event, captured);
+            }
+        });
+        if let Err(e) = dispatch {
+            eprintln!("[r3write] run_on_main_thread failed: {e}");
         }
     });
 
@@ -305,6 +315,11 @@ fn accept_rewrite(
 ) -> Result<(), String> {
     if let Some(w) = app.get_webview_window(QUICK_EDIT_LABEL) {
         let _ = w.hide();
+        // Tauri's hide() is unreliable on this window's flag combination
+        // (frameless + topmost + skipTaskbar); follow up with a direct
+        // ShowWindow(SW_HIDE) so focus actually leaves the popup before
+        // Windows hands it back to the originating app.
+        hide_native(&w);
     }
     // Let Windows hand focus back to the originating app.
     thread::sleep(Duration::from_millis(90));
@@ -324,7 +339,12 @@ fn accept_rewrite(
 #[tauri::command]
 fn dismiss_popup(app: AppHandle, state: tauri::State<OriginalClipboard>) -> Result<(), String> {
     if let Some(w) = app.get_webview_window(QUICK_EDIT_LABEL) {
+        // Tauri 2's WebviewWindow::hide() returns Ok(()) but does not
+        // actually hide a window with this flag combination (decorations:
+        // false + alwaysOnTop + skipTaskbar) — is_visible() stays true.
+        // Follow up with a direct ShowWindow(SW_HIDE) as the real hide.
         let _ = w.hide();
+        hide_native(&w);
     }
     let original = state.0.lock().map_err(|e| e.to_string())?.clone();
     if let Some(orig) = original {
@@ -332,6 +352,19 @@ fn dismiss_popup(app: AppHandle, state: tauri::State<OriginalClipboard>) -> Resu
     }
     Ok(())
 }
+
+#[cfg(windows)]
+fn hide_native(window: &tauri::WebviewWindow) {
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+    if let Ok(hwnd) = window.hwnd() {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn hide_native(_window: &tauri::WebviewWindow) {}
 
 // Plain clipboard write — used by the main window's revert flow to put the
 // pre-rewrite text back on the user's clipboard so they can paste it over
@@ -373,6 +406,52 @@ fn show_no_activate(window: &tauri::WebviewWindow) {
 #[cfg(not(windows))]
 fn show_no_activate(window: &tauri::WebviewWindow) {
     let _ = window.show();
+}
+
+// Reliably foreground the popup after capture finishes. `WebviewWindow::set_focus`
+// resolves to `SetForegroundWindow`, which Windows silently refuses when the
+// caller doesn't hold the foreground lock — exactly our situation, since the
+// source app was foreground during capture. Without this the popup paints with
+// the captured text but never receives keyboard focus, so Enter/Escape go to
+// the source app and the user is stuck clicking on the popup before they can
+// type. The standard workaround is to AttachThreadInput to the current
+// foreground thread's input queue, then call SetForegroundWindow.
+#[cfg(windows)]
+fn force_focus(window: &tauri::WebviewWindow) {
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+        ShowWindow, SW_SHOW,
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        let _ = window.set_focus();
+        return;
+    };
+    unsafe {
+        // The popup was shown with SW_SHOWNOACTIVATE in trigger_quick_edit;
+        // promote it to active now that capture has finished.
+        let _ = ShowWindow(hwnd, SW_SHOW);
+
+        let foreground = GetForegroundWindow();
+        let foreground_tid = GetWindowThreadProcessId(foreground, None);
+        let our_tid = GetCurrentThreadId();
+        let attached = foreground_tid != 0
+            && foreground_tid != our_tid
+            && AttachThreadInput(foreground_tid, our_tid, true).as_bool();
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetForegroundWindow(hwnd);
+        if attached {
+            let _ = AttachThreadInput(foreground_tid, our_tid, false);
+        }
+    }
+    // Tauri's set_focus also pushes WM_SETFOCUS through TAO so the WebView2
+    // child window picks up keyboard focus, not just the outer Tauri parent.
+    let _ = window.set_focus();
+}
+
+#[cfg(not(windows))]
+fn force_focus(window: &tauri::WebviewWindow) {
+    let _ = window.set_focus();
 }
 
 fn parse_code(s: &str) -> Option<Code> {
