@@ -203,9 +203,12 @@ fn trigger_quick_edit(app: &AppHandle, repeat: bool) -> Result<(), String> {
     let (x, y) = cursor_position(app);
     if let Some(w) = app.get_webview_window(QUICK_EDIT_LABEL) {
         let _ = w.set_position(PhysicalPosition::new(x, y));
-        let _ = w.show();
-        // Tell the popup a capture is in progress. Don't set_focus yet — the
-        // source app must keep foreground so Ctrl+C copies from there.
+        // Show without activating — Tauri's `.show()` calls ShowWindow(SW_SHOW)
+        // on Windows, which steals focus from the source app. If focus moves
+        // before the capture thread sends Ctrl+C, the copy lands in our own
+        // webview instead of the user's selection and the popup opens empty.
+        // The capture thread calls `set_focus()` once capture finishes.
+        show_no_activate(&w);
         let _ = w.emit("capture-start", repeat);
     } else {
         eprintln!("[r3write] quick-edit window not found");
@@ -351,6 +354,25 @@ fn cursor_position(app: &AppHandle) -> (i32, i32) {
         return (pos.x as i32, pos.y as i32);
     }
     (100, 100)
+}
+
+#[cfg(windows)]
+fn show_no_activate(window: &tauri::WebviewWindow) {
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+    if let Ok(hwnd) = window.hwnd() {
+        // Safety: hwnd is a valid window handle owned by Tauri for the
+        // lifetime of the WebviewWindow we just queried.
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+    } else {
+        let _ = window.show();
+    }
+}
+
+#[cfg(not(windows))]
+fn show_no_activate(window: &tauri::WebviewWindow) {
+    let _ = window.show();
 }
 
 fn parse_code(s: &str) -> Option<Code> {

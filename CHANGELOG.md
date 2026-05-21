@@ -6,6 +6,11 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-05-21
+
+### Fixed
+- **Quick-edit popup opening empty on the first hotkey press.** The async-first capture flow (introduced in 1.4.0) called `WebviewWindow::show()` on the previously-hidden popup, which on Windows resolves to `ShowWindow(SW_SHOW)` and activates the window — stealing focus from the source app before the capture thread sent Ctrl+C. The synthesized copy then landed in the empty webview instead of the user's selection, the clipboard sentinel survived, and the popup rendered with no input. The trigger path now shows the window via `ShowWindow(SW_SHOWNOACTIVATE)` (Windows-only path through the `windows` crate); the explicit `set_focus()` already in the capture thread still runs once capture finishes, so the popup grabs focus at the right moment.
+
 ## [1.4.0] - 2026-05-17
 
 ### Added
