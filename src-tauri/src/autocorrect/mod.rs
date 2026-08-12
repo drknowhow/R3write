@@ -13,6 +13,7 @@
 
 pub mod bubble;
 pub mod buffer;
+pub mod confusable;
 pub mod dict;
 pub mod hook;
 pub mod inject;
@@ -46,6 +47,12 @@ pub struct AutocorrectConfig {
     /// single-edit neighbourhoods and the least reliable guesses.
     pub min_word_length: usize,
     pub show_bubble: bool,
+    /// Ask the configured model to arbitrate words the dictionary cannot judge.
+    ///
+    /// Separately opt-in and off even when autocorrect is on, because turning it
+    /// on means text leaves the machine. Only ever produces a *suggestion* — the
+    /// LLM never injects anything by itself.
+    pub llm_assist: bool,
     /// Newline-separated process names. Empty means "correct nowhere".
     pub allowlist: String,
     /// Protected terms, reusing the existing Settings → Glossary field.
@@ -62,6 +69,7 @@ impl Default for AutocorrectConfig {
             // words safe, not an arbitrary length floor.
             min_word_length: 3,
             show_bubble: true,
+            llm_assist: false,
             // Notepad only. Fail-closed: everything else is opt-in by hand until
             // it has been shown to survive backspace-and-retype.
             //
@@ -91,6 +99,22 @@ pub struct CorrectionEntry {
     pub reverted: bool,
 }
 
+/// A word the dictionary could not judge, waiting on the model's opinion.
+///
+/// Held while the request is in flight and while the suggestion sits on screen.
+/// `typed_since` grows exactly as it does for [`PendingUndo`] — by the time an
+/// answer arrives the caret has moved on, so accepting has to erase and restore
+/// what was typed in the meantime rather than backspace through it.
+struct PendingSuggestion {
+    id: String,
+    word: String,
+    delimiter: char,
+    app: String,
+    typed_since: String,
+    /// `None` until the frontend answers.
+    suggestion: Option<String>,
+}
+
 /// A correction that can still be reverted in place.
 ///
 /// Only valid while the shadow buffer is still coherent — once the user navigates,
@@ -114,6 +138,9 @@ pub struct AutocorrectState {
     config: Arc<RwLock<AutocorrectConfig>>,
     log: Arc<Mutex<Vec<CorrectionEntry>>>,
     undo: Arc<Mutex<Option<PendingUndo>>>,
+    suggestion: Arc<Mutex<Option<PendingSuggestion>>>,
+    /// Last time a context lookup was dispatched, for debouncing.
+    last_arbitration: Arc<Mutex<u64>>,
     /// Set once the license is confirmed active. The hook is refused until then —
     /// gating the UI alone would leave the keylogger running behind the paywall.
     license_active: Arc<AtomicBool>,
@@ -309,6 +336,13 @@ fn ensure_worker(app: &AppHandle) {
                                     p.typed_since.push(c);
                                 }
                             }
+                            // Same for an in-flight or on-screen suggestion: the
+                            // model's answer arrives well after these keystrokes.
+                            if let Ok(mut s) = state.suggestion.lock() {
+                                if let Some(p) = s.as_mut() {
+                                    p.typed_since.push(c);
+                                }
+                            }
                         }
                     }
                     KeyEvent::Commit(delim) => {
@@ -343,6 +377,24 @@ fn ensure_worker(app: &AppHandle) {
                             .as_ref()
                             .and_then(|d| d.suggest(&word, cfg.min_word_length))
                         else {
+                            // The dictionary declined. If it declined because the
+                            // answer needs context rather than spelling — a
+                            // confusable, or a plural it refused to singularise —
+                            // ask the model. Suggestion only; nothing is injected
+                            // without the user saying so.
+                            if cfg.llm_assist
+                                && dictionary
+                                    .as_ref()
+                                    .is_some_and(|d| d.needs_context(&word, cfg.min_word_length))
+                            {
+                                request_arbitration(
+                                    &app,
+                                    &word,
+                                    delim,
+                                    buf.context(),
+                                    &current_target.process,
+                                );
+                            }
                             continue;
                         };
 
@@ -405,6 +457,59 @@ fn ensure_worker(app: &AppHandle) {
         .ok();
 }
 
+/// Minimum gap between context lookups, in ms.
+///
+/// A hard ceiling on both cost and exposure: even typing confusables continuously,
+/// at most one word every two seconds is sent anywhere.
+const ARBITRATION_DEBOUNCE_MS: u64 = 2000;
+
+/// Ask the frontend to arbitrate a word the dictionary could not judge.
+///
+/// Rust does not make the request itself. The seven provider clients, their base
+/// URLs and their keyring-backed API keys all live in the TypeScript layer
+/// (`makeClient` in main.tsx); duplicating them here would mean two
+/// implementations of the same thing drifting apart, and a second place where API
+/// keys have to be handled.
+fn request_arbitration(app: &AppHandle, word: &str, delim: char, context: &str, process: &str) {
+    let state = app.state::<AutocorrectState>();
+
+    let now = now_ms();
+    {
+        let Ok(mut last) = state.last_arbitration.lock() else {
+            return;
+        };
+        if now.saturating_sub(*last) < ARBITRATION_DEBOUNCE_MS {
+            return;
+        }
+        *last = now;
+    }
+
+    let id = new_id();
+    if let Ok(mut s) = state.suggestion.lock() {
+        *s = Some(PendingSuggestion {
+            id: id.clone(),
+            word: word.to_string(),
+            delimiter: delim,
+            app: process.to_string(),
+            typed_since: String::new(),
+            suggestion: None,
+        });
+    }
+
+    // Only the trailing context goes out — never the whole buffer, and never
+    // anything from a window we were not cleared to read.
+    let tail: String = {
+        let chars: Vec<char> = context.chars().collect();
+        let start = chars.len().saturating_sub(80);
+        chars[start..].iter().collect()
+    };
+
+    let _ = app.emit(
+        "autocorrect:arbitrate",
+        serde_json::json!({ "id": id, "word": word, "context": tail }),
+    );
+}
+
 /// How many characters to erase, and what to type back, to revert a correction.
 ///
 /// Pure so the arithmetic is testable — this calculation has been the source of
@@ -432,12 +537,20 @@ fn undo_plan(
 /// disappears, it is because pressing it would now hit the wrong text.
 fn retire_undo(app: &AppHandle) {
     let state = app.state::<AutocorrectState>();
-    let had = state
+    let had_undo = state
         .undo
         .lock()
         .map(|mut u| u.take().is_some())
         .unwrap_or(false);
-    if had {
+    // A pending suggestion expires on exactly the same terms. `typed_since` only
+    // records characters, so once another word is committed the accounting no
+    // longer describes the screen and accepting would land in the wrong place.
+    let had_suggestion = state
+        .suggestion
+        .lock()
+        .map(|mut s| s.take().is_some())
+        .unwrap_or(false);
+    if had_undo || had_suggestion {
         let a = app.clone();
         let _ = app.run_on_main_thread(move || bubble::hide(&a));
     }
@@ -566,6 +679,109 @@ pub fn autocorrect_status(state: tauri::State<AutocorrectState>) -> serde_json::
         "licenseActive": state.license_active.load(Ordering::SeqCst),
         "enabled": state.snapshot().enabled,
     })
+}
+
+/// The frontend's answer to an `autocorrect:arbitrate` request.
+///
+/// `suggestion` is `None` when the model judged the word correct as written, which
+/// is the common case and produces no UI at all.
+#[tauri::command]
+pub fn autocorrect_llm_suggestion(
+    app: AppHandle,
+    id: String,
+    suggestion: Option<String>,
+    state: tauri::State<AutocorrectState>,
+) {
+    let Ok(mut pending) = state.suggestion.lock() else {
+        return;
+    };
+    let Some(p) = pending.as_mut() else { return };
+
+    // A different word has since been arbitrated, or the buffer was invalidated
+    // while the request was in flight. The answer is about text that is no longer
+    // where we think it is.
+    if p.id != id {
+        return;
+    }
+
+    let Some(fix) = suggestion else {
+        *pending = None;
+        return;
+    };
+    if fix.eq_ignore_ascii_case(&p.word) {
+        // The model agreed with what was typed. Say nothing.
+        *pending = None;
+        return;
+    }
+
+    p.suggestion = Some(fix.clone());
+    let payload = serde_json::json!({
+        "version": state.version.fetch_add(1, Ordering::SeqCst) + 1,
+        "id": p.id,
+        "original": p.word,
+        "suggestion": fix,
+        "app": p.app,
+    });
+    let (word, app_name) = (p.word.clone(), p.app.clone());
+    drop(pending);
+
+    eprintln!("[r3write] suggestion for {word:?} in {app_name}");
+    let _ = app.emit("autocorrect:suggested", payload);
+
+    let a = app.clone();
+    let _ = app.run_on_main_thread(move || bubble::show(&a));
+}
+
+/// Apply a pending suggestion. Only ever reached by explicit user action.
+///
+/// The model's answer arrives 300–2000ms after the word was typed, so this is
+/// never automatic — and even on accept the target is re-verified and whatever was
+/// typed in the meantime is erased and restored, exactly as undo does.
+#[tauri::command]
+pub fn autocorrect_accept_suggestion(
+    app: AppHandle,
+    state: tauri::State<AutocorrectState>,
+) -> Result<bool, String> {
+    let pending = match state.suggestion.lock().map_err(|e| e.to_string())?.take() {
+        Some(p) => p,
+        None => return Ok(false),
+    };
+    let Some(fix) = pending.suggestion.clone() else {
+        return Ok(false);
+    };
+
+    bubble::hide(&app);
+    std::thread::sleep(std::time::Duration::from_millis(90));
+
+    let cfg = state.snapshot();
+    let allow = target::parse_allowlist(&cfg.allowlist);
+    // Re-verify rather than trust the target recorded when the word was typed. The
+    // same rule as an automatic correction: if we cannot confirm where we are
+    // typing, we do not type.
+    let fresh = target::current(&allow, std::process::id(), None);
+    if !fresh.allowed || fresh.process != pending.app {
+        return Err("target changed since the suggestion was made".into());
+    }
+
+    let (erase, restored) = undo_plan(
+        &pending.word,
+        pending.delimiter,
+        &fix,
+        &pending.typed_since,
+    );
+    inject::replace(erase, &restored)?;
+
+    let entry = CorrectionEntry {
+        id: new_id(),
+        timestamp: now_ms(),
+        original: pending.word,
+        correction: fix,
+        app: pending.app,
+        source: "llm".into(),
+        reverted: false,
+    };
+    push_log(&app, entry, cfg.log_retention, false);
+    Ok(true)
 }
 
 /// Take the toast down without reverting — the auto-fade timer, or a dismiss click.

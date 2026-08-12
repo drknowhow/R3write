@@ -133,6 +133,44 @@ impl Dict {
     }
 }
 
+impl Dict {
+    /// Whether this word is worth a context lookup, given that `suggest` declined
+    /// to correct it.
+    ///
+    /// Two cases the dictionary provably cannot handle alone:
+    ///
+    /// - a **confusable** — spelled correctly, possibly the wrong word entirely;
+    /// - a **suppressed plural** — `companys`, where the only reachable answer was
+    ///   the singular and taking it would have changed the meaning.
+    ///
+    /// Everything else returns false, which is what keeps arbitration rare.
+    pub fn needs_context(&self, word: &str, min_len: usize) -> bool {
+        if word.chars().count() < min_len {
+            return false;
+        }
+        if !word.chars().all(|c| c.is_alphabetic() || c == '\'') {
+            return false;
+        }
+        let lower = word.to_lowercase();
+        if self.protected.contains(&lower) {
+            return false;
+        }
+
+        if super::confusable::is_confusable(&lower) {
+            return true;
+        }
+
+        // Did we decline purely because the correction would have singularised it?
+        let hits = self.sym.lookup(&lower, Verbosity::Closest, MAX_EDIT_DISTANCE);
+        match hits.first() {
+            Some(h) if h.distance > 0 => hits
+                .iter()
+                .any(|h| looks_like_intended_plural(&lower, &h.term)),
+            _ => false,
+        }
+    }
+}
+
 /// Whether the typed word looks like a plural the user meant, whose correction
 /// would silently make it singular.
 ///

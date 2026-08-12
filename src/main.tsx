@@ -39,13 +39,16 @@ import { useTheme, useThemeFollower, type ThemeChoice } from "./theme";
 import { useLicense, LS_CHECKOUT_URL, type LicenseState, type UseLicense } from "./license";
 import {
   APPLIED_EVENT,
+  ARBITRATE_EVENT,
   REVERTED_EVENT,
   clearLog,
   getLog,
   installerOptIn,
+  sendLlmSuggestion,
   setConfig as setAutocorrectConfig,
   setLicenseActive,
   type AppliedEvent,
+  type ArbitrateEvent,
   type CorrectionEntry,
   type RevertedEvent,
 } from "./autocorrect";
@@ -550,6 +553,9 @@ interface OllamaSettings {
   autocorrectEnabled: boolean;
   autocorrectMinWordLength: number;
   autocorrectShowBubble: boolean;
+  /** Ask the model about words the dictionary cannot judge. Separately opt-in
+   *  from `autocorrectEnabled`, because this is what sends text off the machine. */
+  autocorrectLlmAssist: boolean;
   autocorrectAllowlist: string;
   autocorrectLogRetention: number;
   /** Whether the installer's opt-in has been applied to `autocorrectEnabled`
@@ -586,6 +592,9 @@ const DEFAULT_SETTINGS: OllamaSettings = {
   // frequency-dominance rule in Rust is what keeps short words safe.
   autocorrectMinWordLength: 3,
   autocorrectShowBubble: true,
+  // Off even when autocorrect is on. Nothing leaves the machine until the user
+  // turns this on specifically.
+  autocorrectLlmAssist: false,
   // Fail-closed. Browsers and Electron apps must NOT be added until the UIA
   // password probe lands — `ES_PASSWORD` cannot see into their text fields, so
   // allowlisting them means typing into password boxes blind.
@@ -1030,6 +1039,51 @@ class GeminiClient implements LLMClient {
   }
 }
 
+// Deliberately not BASE_SYSTEM_PROMPT. That one is for rewriting a passage the
+// user asked about; this is a single-word judgement where any extra prose in the
+// reply has to be parsed back out, and a model that starts explaining itself makes
+// the answer unusable.
+const ARBITRATION_SYSTEM_PROMPT =
+  "You are a proofreader. You are given a sentence fragment and one TARGET word from it. " +
+  "Decide whether the TARGET is the correct word in that context. " +
+  "Consider only word choice and grammatical form (their/there, form/from, singular/plural). " +
+  "Reply with the corrected TARGET word alone, nothing else. " +
+  "If the TARGET is already correct, reply with it unchanged. " +
+  "Never reply with more than one word, and never explain.";
+
+/// Ask the configured provider to judge one word in context.
+///
+/// Returns the replacement word, or null if the model agreed with what was typed
+/// or answered in a shape we cannot trust. Bounded hard: a single word in, a single
+/// word out, and anything else is discarded rather than guessed at.
+async function arbitrateWord(
+  settings: OllamaSettings,
+  word: string,
+  context: string,
+  signal: AbortSignal,
+): Promise<string | null> {
+  const client = makeClient(settings);
+  let reply = "";
+  for await (const chunk of client.chat(
+    [
+      { role: "system", content: ARBITRATION_SYSTEM_PROMPT },
+      { role: "user", content: `Fragment: ...${context}\nTARGET: ${word}` },
+    ],
+    { signal },
+  )) {
+    reply += chunk;
+    // One word is all that can be valid; stop paying for tokens past that.
+    if (reply.length > 64) break;
+  }
+
+  const answer = reply.trim().replace(/^["'`]+|["'`.,!?]+$/g, "");
+  // Refuse anything that is not a single plausible word. A model that explains
+  // itself, apologises, or returns a phrase must not reach the user's document.
+  if (!answer || /\s/.test(answer) || answer.length > word.length + 8) return null;
+  if (answer.toLowerCase() === word.toLowerCase()) return null;
+  return answer;
+}
+
 function makeClient(settings: OllamaSettings): LLMClient {
   if (isOpenAIStyle(settings.provider)) return new OpenAIStyleClient(settings);
   if (settings.provider === "anthropic") return new AnthropicClient(settings);
@@ -1439,11 +1493,53 @@ export function App() {
     void setLicenseActive(license.state.status === "active").catch(() => {});
   }, [license.state.status]);
 
+  // Rust detects which words need context but cannot call a provider itself: the
+  // seven clients, their base URLs and the keyring-backed API keys all live here.
+  // So it emits a request and this window answers. The main window is always
+  // mounted (closing it hides to tray), so it is a reliable place for this.
+  //
+  // Only one window may answer, or the same word would be billed several times.
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const inFlight = new AbortController();
+
+    void listen<ArbitrateEvent>(ARBITRATE_EVENT, (e) => {
+      const p = e.payload;
+      if (!p) return;
+      void (async () => {
+        try {
+          const answer = await arbitrateWord(
+            settingsRef.current,
+            p.word,
+            p.context,
+            inFlight.signal,
+          );
+          await sendLlmSuggestion(p.id, answer);
+        } catch (err) {
+          console.error("[r3write] arbitration failed:", err);
+          // Always answer, even on failure — Rust holds a pending slot for this
+          // id and would otherwise keep it until the next word is committed.
+          await sendLlmSuggestion(p.id, null).catch(() => {});
+        }
+      })();
+    }).then((u) => {
+      unlisten = u;
+    });
+
+    return () => {
+      unlisten?.();
+      inFlight.abort();
+    };
+  }, []);
+
   useEffect(() => {
     void setAutocorrectConfig({
       enabled: settings.autocorrectEnabled,
       minWordLength: settings.autocorrectMinWordLength,
       showBubble: settings.autocorrectShowBubble,
+      llmAssist: settings.autocorrectLlmAssist,
       allowlist: settings.autocorrectAllowlist,
       // Shared with the rewriter's glossary — a term you protect there is
       // protected from autocorrect too.
@@ -1454,6 +1550,7 @@ export function App() {
     settings.autocorrectEnabled,
     settings.autocorrectMinWordLength,
     settings.autocorrectShowBubble,
+    settings.autocorrectLlmAssist,
     settings.autocorrectAllowlist,
     settings.protectedTerms,
     settings.autocorrectLogRetention,
@@ -2921,6 +3018,29 @@ function SettingsDialog({
                         checked={draft.autocorrectShowBubble}
                         onChange={(v) => update({ autocorrectShowBubble: v })}
                       />
+
+                      <div className="rounded-md border border-border bg-bg p-3">
+                        <ToggleRow
+                          label="Ask the model about confusable words"
+                          hint="their/there, form/from, and plurals like companys. These are spelled correctly, so the offline dictionary cannot judge them."
+                          checked={draft.autocorrectLlmAssist}
+                          onChange={(v) => update({ autocorrectLlmAssist: v })}
+                        />
+                        <p className="mt-2 text-[11px] leading-relaxed text-fg-muted">
+                          <span className="font-medium text-fg">
+                            This sends text to {PROVIDER_LABELS[draft.provider]}.
+                          </span>{" "}
+                          When one of these words is typed, R3write sends that word and up to
+                          80 characters of what precedes it to your configured provider. Nothing
+                          else is sent, and at most one word every two seconds.
+                        </p>
+                        <p className="mt-1.5 text-[11px] leading-relaxed text-fg-muted">
+                          Results are only ever <span className="font-medium text-fg">suggested</span> —
+                          the model can never change your text on its own. A reply takes up to a
+                          couple of seconds, by which point you have typed on, so accepting is
+                          always your explicit choice.
+                        </p>
+                      </div>
 
                       <Field label="Applications to correct in">
                         <textarea

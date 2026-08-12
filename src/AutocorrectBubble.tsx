@@ -5,11 +5,23 @@ import { useThemeFollower } from "./theme";
 import {
   APPLIED_EVENT,
   REVERTED_EVENT,
+  SUGGESTED_EVENT,
+  acceptSuggestion,
   dismissBubble,
   undoLast,
   type AppliedEvent,
   type CorrectionEntry,
+  type SuggestedEvent,
 } from "./autocorrect";
+
+/// What the toast is currently showing.
+///
+/// `applied` — we already changed the text; the action is to undo.
+/// `suggested` — we changed nothing; the action is to accept.
+///
+/// The distinction is the whole point of the LLM path: a model answer arrives
+/// seconds after the word was typed, far too late to apply silently.
+type Mode = "applied" | "suggested";
 
 /// How long the toast stays up before fading, in ms. Long enough to read and
 /// reach for, short enough not to linger over someone's work.
@@ -35,6 +47,7 @@ export function AutocorrectBubble() {
   useThemeFollower();
 
   const [entry, setEntry] = useState<CorrectionEntry | null>(null);
+  const [mode, setMode] = useState<Mode>("applied");
   const [shown, setShown] = useState(false);
   /** Highest event version rendered. Two other windows subscribe to the same
    *  stream; the stamp makes out-of-order delivery impossible rather than
@@ -67,16 +80,38 @@ export function AutocorrectBubble() {
   useEffect(() => {
     let unApplied: (() => void) | undefined;
     let unReverted: (() => void) | undefined;
+    let unSuggested: (() => void) | undefined;
 
     void listen<AppliedEvent>(APPLIED_EVENT, (e) => {
       const p = e.payload;
       if (!p || p.version <= versionRef.current) return;
       versionRef.current = p.version;
       setEntry(p.entry);
+      setMode("applied");
       setShown(true);
       if (!pausedRef.current) startTimer();
     }).then((u) => {
       unApplied = u;
+    });
+
+    void listen<SuggestedEvent>(SUGGESTED_EVENT, (e) => {
+      const p = e.payload;
+      if (!p || p.version <= versionRef.current) return;
+      versionRef.current = p.version;
+      setEntry({
+        id: p.id,
+        timestamp: Date.now(),
+        original: p.original,
+        correction: p.suggestion,
+        app: p.app,
+        source: "llm",
+        reverted: false,
+      });
+      setMode("suggested");
+      setShown(true);
+      if (!pausedRef.current) startTimer();
+    }).then((u) => {
+      unSuggested = u;
     });
 
     // Rust hides the window on revert; clearing here keeps the next show from
@@ -91,18 +126,20 @@ export function AutocorrectBubble() {
     return () => {
       unApplied?.();
       unReverted?.();
+      unSuggested?.();
       clearTimer();
     };
   }, [startTimer]);
 
-  const onUndo = useCallback(() => {
+  // Both actions inject text, and both rely on Rust taking this window down and
+  // waiting for focus to return first — otherwise the keystrokes land here rather
+  // than in the user's document.
+  const onAct = useCallback(() => {
     clearTimer();
     setShown(false);
-    // Rust takes the window down and waits for focus to return before injecting
-    // — without that, these backspaces would land in this window rather than the
-    // user's document.
-    void undoLast().catch(() => {});
-  }, []);
+    const action = mode === "suggested" ? acceptSuggestion : undoLast;
+    void action().catch(() => {});
+  }, [mode]);
 
   // Hovering means the user is reading or reaching for Undo. Yanking the toast
   // out from under the cursor at that exact moment is the worst possible timing.
@@ -135,23 +172,34 @@ export function AutocorrectBubble() {
 
         <div className="min-w-0 flex-1 text-sm leading-tight">
           <div className="flex items-center gap-1.5 truncate">
-            <span className="truncate text-fg-muted line-through">{entry?.original}</span>
+            {/* Struck through only when the change has already happened. A
+                suggestion has changed nothing yet, and showing it as struck
+                through would misrepresent the document. */}
+            <span
+              className={`truncate text-fg-muted ${mode === "applied" ? "line-through" : ""}`}
+            >
+              {entry?.original}
+            </span>
             <span aria-hidden className="shrink-0 text-fg-subtle">
               &rarr;
             </span>
             <span className="truncate font-medium text-fg">{entry?.correction}</span>
           </div>
           <div className="truncate text-[11px] text-fg-subtle">
-            {entry?.app || "corrected"}
+            {mode === "suggested" ? "suggestion" : entry?.app || "corrected"}
           </div>
         </div>
 
         <button
           type="button"
-          onClick={onUndo}
-          className="shrink-0 rounded-md border border-border px-2 py-1 text-xs font-medium text-fg-muted hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          onClick={onAct}
+          className={`shrink-0 rounded-md px-2 py-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+            mode === "suggested"
+              ? "bg-accent text-accent-fg hover:bg-accent-hover"
+              : "border border-border text-fg-muted hover:bg-bg-subtle hover:text-fg"
+          }`}
         >
-          Undo
+          {mode === "suggested" ? "Apply" : "Undo"}
         </button>
         <button
           type="button"

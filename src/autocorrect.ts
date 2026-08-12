@@ -25,6 +25,9 @@ export interface AutocorrectConfig {
   enabled: boolean;
   minWordLength: number;
   showBubble: boolean;
+  /** Ask the configured model about words the dictionary cannot judge.
+   *  Separately opt-in: turning it on means text leaves the machine. */
+  llmAssist: boolean;
   /** Newline-separated process names. Empty means "correct nowhere". */
   allowlist: string;
   protectedTerms: string;
@@ -44,8 +47,28 @@ export interface RevertedEvent {
   id: string;
 }
 
+/** Rust asking the frontend to arbitrate a word it cannot judge locally.
+ *  The provider clients and API keys live on this side, so Rust delegates. */
+export interface ArbitrateEvent {
+  id: string;
+  word: string;
+  /** Up to ~80 characters of preceding text. Never the whole buffer. */
+  context: string;
+}
+
+/** A suggestion awaiting explicit acceptance. Never applied automatically. */
+export interface SuggestedEvent {
+  version: number;
+  id: string;
+  original: string;
+  suggestion: string;
+  app: string;
+}
+
 export const APPLIED_EVENT = "autocorrect:applied";
 export const REVERTED_EVENT = "autocorrect:reverted";
+export const ARBITRATE_EVENT = "autocorrect:arbitrate";
+export const SUGGESTED_EVENT = "autocorrect:suggested";
 
 export const getConfig = () => invoke<AutocorrectConfig>("autocorrect_get_config");
 export const setConfig = (config: AutocorrectConfig) =>
@@ -65,6 +88,14 @@ export const undoLast = () => invoke<boolean>("autocorrect_undo_last");
 
 /** Hide the toast without reverting. The undo stays available via the hotkey. */
 export const dismissBubble = () => invoke<void>("autocorrect_dismiss_bubble");
+
+/** Answer an arbitration request. `null` means "the word was already correct",
+ *  which is the common case and shows the user nothing. */
+export const sendLlmSuggestion = (id: string, suggestion: string | null) =>
+  invoke<void>("autocorrect_llm_suggestion", { id, suggestion });
+
+/** Apply a pending suggestion. Only ever called from an explicit user action. */
+export const acceptSuggestion = () => invoke<boolean>("autocorrect_accept_suggestion");
 
 /** Whether the user ticked the box in the installer. A first-run default only. */
 export const installerOptIn = () => invoke<boolean>("autocorrect_installer_opt_in");
