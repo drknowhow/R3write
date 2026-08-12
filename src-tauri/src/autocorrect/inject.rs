@@ -11,7 +11,7 @@
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
-    VIRTUAL_KEY, VK_BACK,
+    VIRTUAL_KEY, VK_BACK, VK_RETURN,
 };
 
 /// Stamped into `dwExtraInfo` on every event we synthesize. "R3WI".
@@ -31,9 +31,21 @@ pub fn replace(backspaces: usize, text: &str) -> Result<(), String> {
         inputs.push(vk_event(VK_BACK, false));
         inputs.push(vk_event(VK_BACK, true));
     }
-    for unit in text.encode_utf16() {
-        inputs.push(unicode_event(unit, false));
-        inputs.push(unicode_event(unit, true));
+    for ch in text.chars() {
+        // Enter must be sent as a virtual key, not as a Unicode packet. A
+        // KEYEVENTF_UNICODE `\n` is delivered as a literal control character that
+        // most editors ignore outright — so the newline the user typed would be
+        // erased with the word and never restored, silently joining two lines.
+        if ch == '\n' || ch == '\r' {
+            inputs.push(vk_event(VK_RETURN, false));
+            inputs.push(vk_event(VK_RETURN, true));
+            continue;
+        }
+        let mut buf = [0u16; 2];
+        for unit in ch.encode_utf16(&mut buf) {
+            inputs.push(unicode_event(*unit, false));
+            inputs.push(unicode_event(*unit, true));
+        }
     }
     send(&inputs)
 }

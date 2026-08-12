@@ -38,6 +38,14 @@ const QUEUE_DEPTH: usize = 256;
 
 const LOG_FILE: &str = "autocorrect-log.json";
 
+/// How long to wait after a word-ending keystroke before replacing the word.
+///
+/// The keyboard hook runs BEFORE the application receives the key, so at the
+/// moment a commit is observed the delimiter is not necessarily on screen yet.
+/// The replacement erases `word + delimiter`, so acting too early erases a
+/// character that was never there.
+const DELIMITER_SETTLE_MS: u64 = 25;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AutocorrectConfig {
@@ -398,11 +406,31 @@ fn ensure_worker(app: &AppHandle) {
                             continue;
                         };
 
-                        // Did anything arrive while we were deciding? `buf.is_empty()`
-                        // cannot answer that — it only reflects what has been
-                        // DRAINED from the channel, and the worker is single
-                        // threaded, so it is empty by construction here. The hook's
-                        // sequence counter is the real check.
+                        // Let the delimiter actually reach the document before we
+                        // count it.
+                        //
+                        // WH_KEYBOARD_LL is a PRE-DISPATCH hook: it sees the space
+                        // before the application does, and this worker runs on a
+                        // different thread. Without this wait the backspaces could
+                        // be queued while the screen still reads `teh` — erasing one
+                        // character too many, taking a neighbouring character with
+                        // it, and then the user's space arrives on top of the
+                        // correction we just typed.
+                        //
+                        // 25ms is far longer than dispatch takes and far shorter
+                        // than the gap between keystrokes even at 150 WPM (~80ms).
+                        // Anything typed during the wait bumps the sequence counter
+                        // below, so waiting costs at most a missed correction and
+                        // never a wrong one.
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            DELIMITER_SETTLE_MS,
+                        ));
+
+                        // Did anything arrive while we were deciding or settling?
+                        // `buf.is_empty()` cannot answer that — it only reflects
+                        // what has been DRAINED from the channel, and the worker is
+                        // single threaded, so it is empty by construction here. The
+                        // hook's sequence counter is the real check.
                         if hook::event_seq() != seq_at_commit {
                             continue;
                         }
@@ -424,6 +452,14 @@ fn ensure_worker(app: &AppHandle) {
 
                         let erase = backspaces_for(&word) + 1; // + the delimiter
                         let replacement = format!("{fix}{delim}");
+                        // Logged in full because this is the one place the feature
+                        // modifies the user's document. When a report says text was
+                        // mangled, these two numbers are what identify the cause.
+                        eprintln!(
+                            "[r3write] correcting {word:?}+{delim:?} -> {replacement:?} \
+                             (erase {erase} graphemes) in {}",
+                            fresh.process
+                        );
                         if let Err(e) = inject::replace(erase, &replacement) {
                             eprintln!("[r3write] autocorrect injection failed: {e}");
                             continue;
