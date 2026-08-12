@@ -6,6 +6,44 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+### Added
+- **System-wide autocorrect — engine (Phase 1).** A `WH_KEYBOARD_LL` hook watches typing in allowlisted applications; when a word is committed with a space, punctuation or Enter, a bundled SymSpell dictionary (82,833 entries, fully offline) decides whether it is a typo and replaces it in place. Off by default, and the hook is never installed until the frontend confirms both an active license and an explicit opt-in. No UI yet — Settings, the correction bubble, and the log panel land in Phases 2–4.
+  - Correction fires only where a candidate is at least 10x more frequent than the runner-up. `teh` → `the` qualifies; genuinely ambiguous typos like `cta` (cat/act) are left alone.
+  - Capitalisation is carried onto the correction, so a sentence-initial `Teh` becomes `The`.
+  - Corrections are logged to `autocorrect-log.json` in the app data dir. **Raw keystrokes are never persisted** — the typing buffer is in memory, capped, and cleared on every invalidation.
+
+- **Autocorrect hardening after review.** Ten defects found by a multi-agent review of the unreleased feature, fixed before first release:
+  - **The password probe read focus before it moved.** A low-level hook sees Tab and mouse-down *before* the target application processes them, so re-probing at that moment re-read the field being left and then marked the verdict fresh for 1500ms — the exact tab-into-a-password-box case the code claimed to cover. The probe is now deferred by one event, and every correction re-resolves the target immediately before injecting.
+  - **A disable/enable cycle could strand a live keyboard hook** that `uninstall` could no longer find, leaving it capturing keystrokes after the user switched autocorrect off. Install/uninstall are now serialised behind one lock and `uninstall` joins the pump thread rather than posting and hoping.
+  - **The toast's Undo button never worked**: the global mouse hook fired on mouse-*down* and retired the undo before React's mouse-*up* handler ran. Clicks on R3write's own windows no longer invalidate anything.
+  - **Undo destroyed text typed after a correction.** It now erases and restores those characters instead of backspacing through them.
+  - **`Ctrl+Alt+Z` could swallow — and then unregister — a user-rebound main hotkey.** The user's own hotkeys are matched first, and a colliding combination is left strictly alone.
+  - **Shifted punctuation was injected back as the wrong character** (`teh?` became `the/`). Character translation now uses `ToUnicodeEx` in its non-state-mutating mode instead of the unshifted-only `MapVirtualKeyW`.
+  - **Modifier state was read with `GetKeyState`**, which reports the hook thread's own permanently-empty input queue, so `Ctrl+V` could classify as typing `v`. Now `GetAsyncKeyState`.
+  - The ~1s dictionary load moved out of the commit path, and the staleness guard that could never fire was replaced with a real sequence check against the hook's event counter.
+  - A word ended with **Tab** is never corrected — Tab always moves focus, so the replacement would land in the next field.
+  - The correction log could render one entry twice when a correction arrived while its initial fetch was in flight.
+- **Password-field detection via UI Automation (Phase 1b).** Chromium, Electron and Java draw their own text boxes inside a single window handle, so the Win32 `ES_PASSWORD` style cannot tell a password box from a search box in any of them. A UIA `IsPassword` probe now covers that gap. The two signals are combined so that **either** source claiming "password" refuses, and **neither** being able to answer also refuses — silence is never read as permission.
+  - The probe runs on the autocorrect worker thread (never the keyboard hook — `GetFocusedElement` is a cross-process call, and a hook callback that overruns Windows' timeout is silently torn down).
+  - It re-runs on the events that actually move focus — a mouse press, a Tab — because tabbing from a username box to a password box in the same page changes neither the process nor the window handle. A 1500ms backstop covers focus moves with no signal at all.
+  - Keystrokes from a field R3write is not cleared for are no longer **buffered**, not merely left uncorrected.
+- **Autocorrect settings + correction log (Phases 3–4).** A new **Autocorrect** tab in Settings (beside Glossary, whose protected terms it reuses) with the master switch, the bubble toggle, the application allowlist, the shortest word to correct, and log retention. The main window's panel header is now a switcher between **History** (rewrites you asked for) and **Autocorrect** (fixes that happened while you typed), the latter listing each correction newest-first with its app and a **Copy original** button.
+  - The Settings copy states plainly what the feature does and what it refuses to do — terminals, password fields, elevated windows, remote desktop, IME/CJK, and for now browsers and Electron apps, since Windows only exposes "this is a password field" for native text boxes.
+  - The log offers **Copy original**, not an in-place revert: by the time you are reading the list the caret has moved, and re-injecting would damage whatever now sits under it. In-place revert is the bubble's Undo and `Ctrl+Alt+Z`, both of which expire on purpose.
+  - The installer checkbox seeds the enabled state on first run only, then marks itself seeded so it can never override a later choice made in Settings.
+- **Autocorrect correction toast + undo (Phase 2).** A third frameless always-on-top window (`autocorrect-bubble`) appears in the bottom-right of the work area after a correction, showing `teh → the` with **Undo** and a dismiss button. It never takes focus (`SW_SHOWNOACTIVATE`), fades after 4s, and pauses that timer while the pointer is over it. **`Ctrl+Alt+Z`** reverts the last correction globally, whether or not the toast is still up.
+  - There is no in-place underline, and there will not be one: R3write cannot draw inside another app's text field, and a caret-anchored overlay has no caret to anchor to in Chromium, Electron or Java apps.
+  - The Undo affordance disappears exactly when it stops being safe — the undo is retired on any buffer invalidation *and on the next committed word*, and the toast is taken down with it.
+  - Its own Vite entry, so the toast bundle is 3 kB and drags in none of the main window's Settings/history tree.
+- **Installer opt-in for autocorrect.** A new "Optional features" page in the Windows installer, between the install-directory and start-menu steps, offers *Enable system-wide autocorrect*. It defaults to **unchecked** — a feature that reads keystrokes is never pre-ticked — and records the choice at `HKCU\Software\R3write\AutocorrectOptIn`. The choice seeds the first-run default in Settings; it is a preference, not a switch, and cannot by itself start the keyboard hook (that still needs an active license and an explicit enable).
+
+### Changed
+- **The NSIS installer template is now forked into `src-tauri/installer/`.** Tauri 2's template has no Components page and both finish-page checkbox slots were already used, so `bundle.windows.nsis.template` was the only supported way to add the opt-in page. A pristine upstream copy (`installer.upstream.nsi`, tauri-cli 2.10.1) sits beside it so Tauri upgrades stay a mechanical three-way merge — see `src-tauri/installer/README.md`.
+- **All synthetic keyboard input now routes through one tagged chokepoint** (`autocorrect::inject`), replacing enigo. enigo cannot set `dwExtraInfo`, so with a keyboard hook installed the `Ctrl+C` in `capture_selection` and the `Ctrl+V` in `accept_rewrite` would have come back through the hook indistinguishable from the user typing — R3write's own quick-edit paste would have fed itself into the autocorrect buffer. Every event we synthesize now carries `R3W_INJECT_TAG`; the hook drops tagged events unconditionally, and treats *untagged* injected events as foreign input that invalidates the buffer.
+
+### Removed
+- **`enigo` dependency.** Superseded by direct `SendInput` calls through the tagged inject module.
+
 ## [1.4.1] - 2026-05-21
 
 ### Fixed

@@ -25,6 +25,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, "index.html"),
         "quick-edit": resolve(__dirname, "quick-edit.html"),
+        "autocorrect-bubble": resolve(__dirname, "autocorrect-bubble.html"),
       },
       output: {
         manualChunks(id) {
