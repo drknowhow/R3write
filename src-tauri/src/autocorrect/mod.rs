@@ -16,6 +16,7 @@ pub mod buffer;
 pub mod dict;
 pub mod hook;
 pub mod inject;
+pub mod shape;
 pub mod target;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

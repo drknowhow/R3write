@@ -5,7 +5,9 @@
 
 use std::collections::HashSet;
 
-use symspell::{SymSpell, UnicodeStringStrategy, Verbosity};
+use symspell::{SymSpell, Suggestion, UnicodeStringStrategy, Verbosity};
+
+use super::shape::classify_edit;
 
 /// Word/frequency list from the SymSpell project (MIT), derived from Google Books
 /// Ngram data. ~82.8k entries, compiled into the binary.
@@ -18,15 +20,19 @@ const RAW_DICTIONARY: &str = include_str!("../../resources/frequency_dictionary_
 /// than the value the index was built with, so the two are tied together here.
 const MAX_EDIT_DISTANCE: i64 = 2;
 
-/// How much more common the best candidate must be than the runner-up before we
-/// will correct without asking.
+/// How far ahead the best candidate must be, on a frequency score weighted by the
+/// shape of the typo, before we correct without asking.
 ///
-/// "Exactly one candidate" was the original rule and it was wrong: `teh` has
-/// several neighbours at distance 1 (`the`, `ten`, `tea`), so the canonical typo in
-/// English would never have been corrected. What actually distinguishes it is that
-/// `the` is ~200x more frequent than the alternatives. Where no candidate dominates
-/// — `cta` → `cat`/`act` — we stay out of the way.
-const DOMINANCE: i64 = 10;
+/// This has been wrong twice. "Exactly one candidate" rejected `teh` → `the`.
+/// Replacing it with a 10x raw-frequency lead then landed in the middle of the
+/// real distribution — `adn` → `and` missed by 1.4x and `cta` → `cat` by 0.2x,
+/// while `usee` was a 1.06x coin flip between `use` and `see`.
+///
+/// Both failures came from ranking on frequency alone. With `shape` weighting
+/// carrying most of the discrimination, this only has to separate a clear winner
+/// from a genuine tie, so it is far lower — and it is now checked against a corpus
+/// of real typos in the tests below rather than picked by argument.
+const DOMINANCE: i64 = 3;
 
 pub struct Dict {
     sym: SymSpell<UnicodeStringStrategy>,
@@ -86,7 +92,7 @@ impl Dict {
             return None;
         }
 
-        let mut hits = self.sym.lookup(&lower, Verbosity::Closest, MAX_EDIT_DISTANCE);
+        let hits = self.sym.lookup(&lower, Verbosity::Closest, MAX_EDIT_DISTANCE);
 
         // Distance 0 means the word is in the dictionary — it is spelled fine.
         // Real-word errors ("form" for "from") are invisible here by design; that
@@ -95,19 +101,75 @@ impl Dict {
             return None;
         }
 
-        // Nearest first, then most frequent. Do not rely on the crate's ordering.
-        hits.sort_by(|a, b| a.distance.cmp(&b.distance).then(b.count.cmp(&a.count)));
+        // Score by corpus frequency weighted by how plausible the typo is. Ranking
+        // on frequency alone cannot separate `use` from `see` for input `usee`;
+        // one is a doubled keystroke and the other swaps two distant keys.
+        let mut scored: Vec<(i64, &Suggestion)> = hits
+            .iter()
+            .map(|h| {
+                let w = classify_edit(&lower, &h.term).weight() as i64;
+                (h.count.saturating_mul(w), h)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
 
-        let first = hits.first()?;
-        if let Some(second) = hits.get(1) {
-            // Only overrule the user when one answer is overwhelmingly likely.
-            if first.count < second.count.saturating_mul(DOMINANCE) {
+        let (top_score, first) = *scored.first()?;
+        if let Some((runner_up, _)) = scored.get(1) {
+            // Only overrule the user when one answer is clearly ahead.
+            if top_score < runner_up.saturating_mul(DOMINANCE) {
                 return None;
             }
         }
 
+        // `companys` → `company` is a real word, and wrong: it silently makes a
+        // plural singular, which is worse than leaving the typo because the reader
+        // may never notice. Getting `companies` needs morphology this engine does
+        // not have, so these are left alone.
+        if looks_like_intended_plural(&lower, &first.term) {
+            return None;
+        }
+
         Some(match_case(word, &first.term))
     }
+}
+
+/// Whether the typed word looks like a plural the user meant, whose correction
+/// would silently make it singular.
+///
+/// `companys` sits one edit from `company` and two from `companies`, so edit
+/// distance will always prefer the singular. Accepting that changes the meaning of
+/// the sentence — a quieter failure than leaving the misspelling, because a real
+/// word does not look wrong on re-reading. Consistent with the fail-closed stance
+/// elsewhere: when we cannot get it right, do nothing.
+fn looks_like_intended_plural(typed: &str, correction: &str) -> bool {
+    let Some(stem) = typed.strip_suffix('s') else {
+        return false;
+    };
+
+    // A doubled `s` is a keystroke slip, not a plural: `thiss` → `this` should
+    // still be corrected.
+    if stem.ends_with('s') {
+        return false;
+    }
+
+    // The correction is just the word minus its plural `s`.
+    if stem == correction {
+        return true;
+    }
+
+    // Consonant + `ys`: the English plural is `-ies`, which is two edits away and
+    // therefore unreachable. `companys`, `storys`, `partys` — but not `boys`,
+    // `days`, `keys`, where `y` follows a vowel and the plural really is `-ys`.
+    if let Some(before_y) = stem.strip_suffix('y') {
+        if before_y
+            .chars()
+            .next_back()
+            .is_some_and(|c| !matches!(c, 'a' | 'e' | 'i' | 'o' | 'u'))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Carry the user's capitalisation onto the correction.
@@ -152,22 +214,70 @@ mod tests {
         assert_eq!(dict().suggest("the", 3), None, "`the` must be a known word");
     }
 
+    /// The corpus the DOMINANCE threshold is tuned against.
+    ///
+    /// Both previous thresholds were chosen by argument and both were wrong. This
+    /// is the guard: change the weights or the threshold and these say whether the
+    /// change was an improvement or just a different set of failures.
     #[test]
-    fn corrects_common_typos() {
-        for (typo, want) in [("teh", "the"), ("recieve", "receive"), ("seperate", "separate")] {
+    fn typo_corpus_is_corrected() {
+        let d = dict();
+        for (typo, want) in [
+            // Transpositions — the commonest typing error.
+            ("teh", "the"),
+            ("adn", "and"),
+            ("recieve", "receive"),
+            ("thier", "their"),
+            ("waht", "what"),
+            // Doubled keystroke.
+            ("usee", "use"),
+            // Plain misspellings.
+            ("seperate", "separate"),
+            ("definately", "definitely"),
+            ("occured", "occurred"),
+        ] {
             assert_eq!(
-                dict().suggest(typo, 3).as_deref(),
+                d.suggest(typo, 3).as_deref(),
                 Some(want),
                 "{typo} should correct to {want}"
             );
         }
     }
 
+    /// The other half of the corpus: things that must NOT be touched. A threshold
+    /// that fixes more typos by also rewriting these is not an improvement.
     #[test]
-    fn ambiguous_typos_are_left_alone() {
-        // No dominant candidate means no correction. Guessing here is precisely how
-        // autocorrect earns its reputation.
-        assert_eq!(dict().suggest("cta", 3), None);
+    fn correct_and_ambiguous_words_are_left_alone() {
+        let d = dict();
+        for w in [
+            // Ordinary words.
+            "quick", "brown", "keyboard", "correction", "the", "and", "use",
+            // Real-word errors: both are words, so this engine cannot see them.
+            // Phase 5's job, not a regression.
+            "form", "there", "your",
+        ] {
+            assert_eq!(d.suggest(w, 3), None, "{w} must not be rewritten");
+        }
+    }
+
+    #[test]
+    fn intended_plurals_are_not_made_singular() {
+        let d = dict();
+        // `company` is one edit away and `companies` is two, so edit distance can
+        // only ever offer the singular — which changes the meaning of the sentence.
+        assert_eq!(d.suggest("companys", 3), None);
+        assert_eq!(d.suggest("storys", 3), None);
+
+        assert!(looks_like_intended_plural("companys", "company"));
+        // Any word whose correction is just itself minus a trailing `s` is being
+        // made singular, and that changes meaning — `boys` → `boy` included. (Real
+        // plurals never reach this: they are dictionary words and return at
+        // distance 0 long before.)
+        assert!(looks_like_intended_plural("boys", "boy"));
+
+        // A doubled `s` is a keystroke slip, not a plural, and must still correct.
+        assert!(!looks_like_intended_plural("thiss", "this"));
+        assert_eq!(d.suggest("thiss", 3).as_deref(), Some("this"));
     }
 
     #[test]
@@ -206,6 +316,28 @@ mod tests {
     #[test]
     fn sentence_initial_typo_keeps_its_capital() {
         assert_eq!(dict().suggest("Teh", 3).as_deref(), Some("The"));
+    }
+
+    /// Diagnostic, not an assertion. `cargo test probe_candidates -- --nocapture`
+    /// prints what SymSpell actually returns, so tuning arguments are made against
+    /// real numbers rather than guesses.
+    #[test]
+    fn probe_candidates() {
+        let d = dict();
+        for w in ["usee", "companys", "teh", "recieve", "cta", "adn", "thier", "definately"] {
+            let mut hits = d.sym.lookup(w, Verbosity::Closest, MAX_EDIT_DISTANCE);
+            // Sort exactly as `suggest` does — the raw lookup order is not ranked.
+            hits.sort_by(|a, b| a.distance.cmp(&b.distance).then(b.count.cmp(&a.count)));
+            let verdict = d.suggest(w, 3);
+            println!("\n{w:?} -> {verdict:?}   ({} candidates)", hits.len());
+            for h in hits.iter().take(4) {
+                println!("    {:<12} dist={} count={}", h.term, h.distance, h.count);
+            }
+            if hits.len() > 1 {
+                let ratio = hits[0].count as f64 / hits[1].count.max(1) as f64;
+                println!("    top/runner-up = {ratio:.2}x (need {DOMINANCE}x)");
+            }
+        }
     }
 
     #[test]
