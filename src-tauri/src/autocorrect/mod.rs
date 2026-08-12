@@ -78,16 +78,19 @@ impl Default for AutocorrectConfig {
             min_word_length: 3,
             show_bubble: true,
             llm_assist: false,
-            // Notepad only. Fail-closed: everything else is opt-in by hand until
-            // it has been shown to survive backspace-and-retype.
+            // Native prose editors only. These are the applications where the
+            // Win32 password check is authoritative, there is no autocomplete
+            // dropdown to fight, and the content is sentences rather than commands
+            // or identifiers.
             //
-            // Browsers and Electron apps are now *safe* to add — the UIA probe in
-            // `target` detects their password fields, and an unanswerable probe
-            // refuses rather than guesses. They stay out of the default because
-            // replacement itself is unproven there: autocomplete dropdowns can eat
-            // keystrokes or replace a wider range than the typed word. That is a
-            // correctness question for the Phase 0 matrix, not a safety one.
-            allowlist: "notepad.exe".into(),
+            // Browsers and Electron apps are *safe* to add — the UIA probe detects
+            // their password fields and an unanswerable probe refuses rather than
+            // guesses — but replacement through their autocomplete popups is
+            // unproven, so they are left to the user.
+            //
+            // Terminals are deliberately absent: a shell password prompt is not a
+            // password *field*, so neither detection method can see it.
+            allowlist: "notepad.exe\nwordpad.exe\nwinword.exe\noutlook.exe".into(),
             protected_terms: String::new(),
             log_retention: 200,
         }
@@ -827,6 +830,27 @@ pub fn autocorrect_accept_suggestion(
 #[tauri::command]
 pub fn autocorrect_dismiss_bubble(app: AppHandle) {
     bubble::hide(&app);
+}
+
+/// Running applications the user could add to the allowlist.
+///
+/// Exists so "let it work in Outlook" does not require knowing that Outlook is
+/// `outlook.exe`.
+#[tauri::command]
+pub fn autocorrect_running_apps() -> Vec<target::RunningApp> {
+    target::running_apps(std::process::id())
+}
+
+/// Which of the currently-allowlisted entries carry the terminal risks.
+///
+/// Returned rather than duplicated in TypeScript so there is one list, in the
+/// module that also enforces target gating.
+#[tauri::command]
+pub fn autocorrect_risky_entries(allowlist: String) -> Vec<String> {
+    target::parse_allowlist(&allowlist)
+        .into_iter()
+        .filter(|e| target::is_risky_process(e))
+        .collect()
 }
 
 #[tauri::command]

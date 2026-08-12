@@ -44,6 +44,8 @@ import {
   clearLog,
   getLog,
   installerOptIn,
+  riskyEntries,
+  runningApps,
   sendLlmSuggestion,
   setConfig as setAutocorrectConfig,
   setLicenseActive,
@@ -51,6 +53,7 @@ import {
   type ArbitrateEvent,
   type CorrectionEntry,
   type RevertedEvent,
+  type RunningApp,
 } from "./autocorrect";
 import "./index.css";
 import appIconUrl from "./icon.png";
@@ -3048,7 +3051,7 @@ function SettingsDialog({
                           onChange={(e) => update({ autocorrectAllowlist: e.target.value })}
                           rows={4}
                           spellCheck={false}
-                          placeholder={"One executable name per line, e.g.\nnotepad.exe\nwordpad.exe"}
+                          placeholder={"One executable name per line, e.g.\nnotepad.exe\noutlook.exe"}
                           className={`${inputCls} resize-y font-mono text-[12px]`}
                         />
                         <p className="mt-1 text-[11px] text-fg-subtle">
@@ -3056,22 +3059,32 @@ function SettingsDialog({
                           <span className="font-medium">only</span> in the apps named here, and an
                           empty list corrects nowhere.
                         </p>
+                        <AppPicker
+                          allowlist={draft.autocorrectAllowlist}
+                          onAdd={(exe) =>
+                            update({
+                              autocorrectAllowlist: `${draft.autocorrectAllowlist.replace(/\s*$/, "")}\n${exe}`.trim(),
+                            })
+                          }
+                        />
                       </Field>
 
+                      <RiskyAllowlistWarning allowlist={draft.autocorrectAllowlist} />
+
                       <div className="rounded-md border border-border bg-bg p-3 text-[11px] leading-relaxed text-fg-muted">
-                        <p className="font-medium text-fg">Not supported, by design</p>
+                        <p className="font-medium text-fg">Where corrections never happen</p>
                         <p className="mt-1">
-                          Terminals, password fields, elevated windows, remote-desktop sessions, and
-                          IME / CJK input are refused outright. These are not bugs.
+                          Password fields, elevated windows, remote-desktop sessions and IME / CJK
+                          input are refused regardless of this list. These are not bugs.
                         </p>
                         <p className="mt-1.5">
-                          Browsers and Electron apps (Chrome, Slack, VS Code) can be added, but
-                          aren&rsquo;t included by default. Password fields inside them are detected
-                          via Windows UI Automation rather than the native window style, and if that
-                          detection can&rsquo;t answer, R3write declines to type rather than guess.
-                          What is <span className="font-medium">not</span> yet proven is replacement
-                          itself: autocomplete dropdowns in these apps can swallow keystrokes or
-                          replace more text than expected. Add them once you&rsquo;ve tried it.
+                          Browsers and Electron apps (Chrome, Slack, VS Code) can be added. Password
+                          fields inside them are detected via Windows UI Automation rather than the
+                          native window style, and if that detection can&rsquo;t answer, R3write
+                          declines to type rather than guess. What is{" "}
+                          <span className="font-medium">not</span> yet proven is replacement itself:
+                          autocomplete dropdowns can swallow keystrokes or replace more text than
+                          expected.
                         </p>
                       </div>
 
@@ -3345,6 +3358,148 @@ function SettingsDialog({
         </AnimatePresence>
       </Dialog.Portal>
     </Dialog.Root>
+  );
+}
+
+/// Lists running applications so adding one does not require knowing its
+/// executable name. Loaded on open rather than on mount — enumerating every
+/// top-level window is not something to do while the dialog is merely sitting there.
+function AppPicker({
+  allowlist,
+  onAdd,
+}: {
+  allowlist: string;
+  onAdd: (exe: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [apps, setApps] = useState<RunningApp[] | null>(null);
+
+  const already = useMemo(
+    () =>
+      new Set(
+        allowlist
+          .split("\n")
+          .map((l) => l.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    [allowlist],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    setApps(null);
+    void runningApps()
+      .then(setApps)
+      .catch(() => setApps([]));
+  }, [open]);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="mt-2 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-fg-muted transition hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      >
+        Add application…
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-2 rounded-md border border-border bg-bg">
+      <div className="flex items-center justify-between border-b border-border px-2 py-1.5">
+        <span className="text-[11px] font-medium text-fg-muted">Running applications</span>
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          aria-label="Close"
+          className="rounded p-0.5 text-fg-subtle hover:text-fg"
+        >
+          <X size={12} />
+        </button>
+      </div>
+      <div className="max-h-44 overflow-y-auto p-1">
+        {apps === null && <p className="p-2 text-[11px] text-fg-subtle">Looking…</p>}
+        {apps?.length === 0 && (
+          <p className="p-2 text-[11px] text-fg-subtle">No windowed applications found.</p>
+        )}
+        {apps?.map((a) => {
+          const added = already.has(a.exe.toLowerCase());
+          return (
+            <button
+              key={a.exe}
+              type="button"
+              disabled={added}
+              onClick={() => {
+                onAdd(a.exe);
+                setOpen(false);
+              }}
+              className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-[12px] transition hover:bg-bg-subtle disabled:opacity-40 disabled:hover:bg-transparent"
+            >
+              <span className="min-w-0 flex-1 truncate text-fg">
+                {a.title}
+                {a.risky && (
+                  <span
+                    title="Terminal — see the warning below"
+                    className="ml-1.5 text-amber-500"
+                  >
+                    ⚠
+                  </span>
+                )}
+              </span>
+              <span className="shrink-0 font-mono text-[10px] text-fg-subtle">
+                {added ? "added" : a.exe}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/// Shown only when a terminal is actually on the allowlist.
+///
+/// R3write does not block terminals — it is the user's machine — but the two
+/// risks are specific enough, and quiet enough, that discovering them by accident
+/// would be the worst way to learn about them.
+function RiskyAllowlistWarning({ allowlist }: { allowlist: string }) {
+  const [risky, setRisky] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void riskyEntries(allowlist)
+      .then((r) => {
+        if (!cancelled) setRisky(r);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [allowlist]);
+
+  if (risky.length === 0) return null;
+
+  return (
+    <div
+      role="alert"
+      className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-[11px] leading-relaxed text-fg"
+    >
+      <p className="font-medium">
+        Terminal on the list: {risky.join(", ")}
+      </p>
+      <p className="mt-1 text-fg-muted">
+        A shell password prompt is not a password <em>field</em> — at a{" "}
+        <span className="font-mono">sudo</span>, <span className="font-mono">ssh</span> or
+        credential prompt there is nothing for R3write to detect, so what you type there is
+        read like any other text. The protection that covers every other application does not
+        exist here.
+      </p>
+      <p className="mt-1.5 text-fg-muted">
+        And Enter runs the line. A correction landing on a command, path or flag means
+        executing something you didn&rsquo;t type.
+      </p>
+    </div>
   );
 }
 

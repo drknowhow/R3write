@@ -15,8 +15,9 @@
 //! probe lands, **browsers must not be added to the shipped allowlist** — the
 //! password check simply cannot see into them.
 
+use serde::Serialize;
 use windows::core::PWSTR;
-use windows::Win32::Foundation::{CloseHandle, HWND, MAX_PATH, RPC_E_CHANGED_MODE};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, MAX_PATH, RPC_E_CHANGED_MODE};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
@@ -26,8 +27,9 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetWindowLongW, GetWindowThreadProcessId,
-    GUITHREADINFO, GWL_STYLE,
+    EnumWindows, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetWindowLongW,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, GUITHREADINFO,
+    GWL_STYLE,
 };
 
 /// `ES_PASSWORD`, from winuser.h. Only meaningful on an EDIT-class window.
@@ -250,6 +252,116 @@ pub fn current_layout() -> isize {
         let tid = GetWindowThreadProcessId(hwnd, None);
         GetKeyboardLayout(tid).0 as isize
     }
+}
+
+/// Console hosts and remote shells.
+///
+/// Not blocked — it is the user's machine — but they carry two risks no other
+/// application does, and the UI says so before one is added:
+///
+/// 1. **Password prompts are invisible.** At a `sudo`, `ssh` or credential-helper
+///    prompt there is no password *field*, just a process printing a message. Both
+///    `ES_PASSWORD` and UIA `IsPassword` have nothing to report, so the safety net
+///    that covers every other application simply is not there.
+/// 2. **Enter executes.** A correction landing on a command, path or flag means
+///    running something the user did not type.
+const RISKY_PROCESSES: &[&str] = &[
+    "cmd.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "windowsterminal.exe",
+    "conhost.exe",
+    "openconsole.exe",
+    "wsl.exe",
+    "wt.exe",
+    "bash.exe",
+    "ssh.exe",
+    "putty.exe",
+    "mintty.exe",
+    "alacritty.exe",
+    "wezterm-gui.exe",
+];
+
+pub fn is_risky_process(exe: &str) -> bool {
+    let lower = exe.to_lowercase();
+    RISKY_PROCESSES.iter().any(|r| *r == lower)
+}
+
+/// A running application the user could add to the allowlist.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunningApp {
+    /// Executable name, e.g. `outlook.exe` — what the allowlist matches on.
+    pub exe: String,
+    /// A window title, so the list reads as "Outlook" rather than "outlook.exe".
+    pub title: String,
+    pub risky: bool,
+}
+
+/// Enumerate visible top-level windows, one entry per executable.
+///
+/// Exists so adding an application does not require knowing that Outlook is
+/// `outlook.exe`. Only ever called when the picker is opened.
+pub fn running_apps(own_pid: u32) -> Vec<RunningApp> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(
+            Some(enum_proc),
+            LPARAM(&mut found as *mut Vec<(String, String)> as isize),
+        );
+    }
+
+    let mut apps: Vec<RunningApp> = Vec::new();
+    for (exe, title) in found {
+        if exe.is_empty() || apps.iter().any(|a| a.exe == exe) {
+            continue;
+        }
+        // Never offer ourselves: correcting inside R3write's own prompt field is
+        // explicitly out of scope.
+        if process_pid_matches(&exe, own_pid) {
+            continue;
+        }
+        let risky = is_risky_process(&exe);
+        apps.push(RunningApp { exe, title, risky });
+    }
+    apps.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    apps
+}
+
+/// Our own executable name, resolved once, so the picker can exclude it.
+fn process_pid_matches(exe: &str, own_pid: u32) -> bool {
+    process_name(own_pid).is_some_and(|own| own == exe)
+}
+
+unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
+    let out = &mut *(lparam.0 as *mut Vec<(String, String)>);
+
+    // Visible, top-level, and actually titled — that combination is what the user
+    // thinks of as "an open application", as opposed to the hundreds of invisible
+    // helper windows every session has.
+    if !IsWindowVisible(hwnd).as_bool() {
+        return true.into();
+    }
+    let len = GetWindowTextLengthW(hwnd);
+    if len <= 0 {
+        return true.into();
+    }
+    let mut title = vec![0u16; len as usize + 1];
+    let written = GetWindowTextW(hwnd, &mut title);
+    if written <= 0 {
+        return true.into();
+    }
+    let title = String::from_utf16_lossy(&title[..written as usize]);
+
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid == 0 {
+        return true.into();
+    }
+    if let Some(exe) = process_name(pid) {
+        out.push((exe, title));
+    }
+    true.into()
 }
 
 /// Parse the newline-separated allowlist from Settings into comparable names.

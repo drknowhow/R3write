@@ -99,3 +99,20 @@ export const acceptSuggestion = () => invoke<boolean>("autocorrect_accept_sugges
 
 /** Whether the user ticked the box in the installer. A first-run default only. */
 export const installerOptIn = () => invoke<boolean>("autocorrect_installer_opt_in");
+
+/** A running application offered by the allowlist picker. */
+export interface RunningApp {
+  /** Executable name, e.g. `outlook.exe` — what the allowlist matches on. */
+  exe: string;
+  /** A window title, so the list reads as "Outlook" rather than "outlook.exe". */
+  title: string;
+  /** A terminal or remote shell. See `RISKY_PROCESSES` in target.rs. */
+  risky: boolean;
+}
+
+export const runningApps = () => invoke<RunningApp[]>("autocorrect_running_apps");
+
+/** Which allowlist entries are terminals. Asked of Rust rather than duplicated
+ *  here, so there is one list and it lives beside the code that gates targets. */
+export const riskyEntries = (allowlist: string) =>
+  invoke<string[]>("autocorrect_risky_entries", { allowlist });

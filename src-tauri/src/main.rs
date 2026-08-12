@@ -267,6 +267,8 @@ fn main() {
             autocorrect::autocorrect_dismiss_bubble,
             autocorrect::autocorrect_llm_suggestion,
             autocorrect::autocorrect_accept_suggestion,
+            autocorrect::autocorrect_running_apps,
+            autocorrect::autocorrect_risky_entries,
         ])
         .run(tauri::generate_context!())
         .expect("error while running R3write");
