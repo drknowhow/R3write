@@ -14,16 +14,26 @@ tauri-plugin-http = { version = "2", features = ["unsafe-headers"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-shell = "2"
-enigo = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
+symspell = "0.5"
+unicode-segmentation = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",
   "Win32_System_Threading",
+  # Autocorrect: LL keyboard hook reads virtual keys, and tagged injection needs
+  # raw SendInput (enigo cannot set dwExtraInfo, so the hook could not otherwise
+  # tell our own synthetic keystrokes from a foreign tool's).
+  "Win32_UI_Input_KeyboardAndMouse",
+  # UI Automation: the only way to tell a password field from a normal one inside
+  # Chromium, Electron and Java, which render their own text boxes and are
+  # invisible to the Win32 ES_PASSWORD style.
+  "Win32_UI_Accessibility",
+  "Win32_System_Com",
 ] }
 
 [[bin]]

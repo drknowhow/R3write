@@ -4,7 +4,6 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -13,12 +12,51 @@ use tauri::{
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_shell::ShellExt;
+use windows::Win32::UI::Input::KeyboardAndMouse::{VK_C, VK_CONTROL, VK_V};
 
 #[derive(Default)]
 struct OriginalClipboard(Mutex<Option<String>>);
 
 struct CurrentHotkey(Mutex<Shortcut>);
 struct RepeatHotkey(Mutex<Shortcut>);
+/// Reverts the last autocorrect. Separate from the rewrite hotkeys because it is
+/// meaningful even when the quick-edit popup has never been opened.
+struct UndoHotkey(Mutex<Shortcut>);
+
+pub fn default_undo_shortcut() -> Shortcut {
+    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyZ)
+}
+
+/// Claim or release the autocorrect undo shortcut.
+///
+/// Called from `autocorrect::apply` so the shortcut's lifetime matches the
+/// feature's: enabled means we hold Ctrl+Alt+Z, disabled means we give it back to
+/// whatever else the user has bound it to.
+pub fn set_undo_shortcut_registered(app: &AppHandle, want: bool) {
+    let sc = default_undo_shortcut();
+
+    // If the user has bound their own hotkey to this combination, it is theirs, not
+    // ours: never register over it and — more importantly — never UNREGISTER it.
+    // Doing so killed their quick-edit hotkey outright until the app restarted,
+    // simply because autocorrect had been toggled off.
+    let collides = |state: Option<Shortcut>| state.is_some_and(|s| s == sc);
+    let main_hotkey = app.state::<CurrentHotkey>().0.lock().ok().map(|g| *g);
+    let repeat_hotkey = app.state::<RepeatHotkey>().0.lock().ok().map(|g| *g);
+    if collides(main_hotkey) || collides(repeat_hotkey) {
+        eprintln!("[r3write] undo shortcut collides with the user's hotkey — leaving it alone");
+        return;
+    }
+
+    let held = app.global_shortcut().is_registered(sc);
+    if want && !held {
+        match app.global_shortcut().register(sc) {
+            Ok(_) => eprintln!("[r3write] registered Ctrl+Alt+Z (autocorrect undo)"),
+            Err(e) => eprintln!("[r3write] undo shortcut register failed: {e}"),
+        }
+    } else if !want && held {
+        let _ = app.global_shortcut().unregister(sc);
+    }
+}
 
 fn default_shortcut() -> Shortcut {
     Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyG)
@@ -32,6 +70,8 @@ fn repeat_shortcut_for(base: &Shortcut) -> Shortcut {
     Shortcut::new(Some(mods), base.key)
 }
 
+mod autocorrect;
+
 const QUICK_EDIT_LABEL: &str = "quick-edit";
 const MAIN_LABEL: &str = "main";
 const CLIPBOARD_SENTINEL: &str = "\u{0001}r3write::no-selection\u{0001}";
@@ -39,10 +79,12 @@ const CLIPBOARD_SENTINEL: &str = "\u{0001}r3write::no-selection\u{0001}";
 fn main() {
     tauri::Builder::default()
         .manage(OriginalClipboard::default())
+        .manage(autocorrect::AutocorrectState::default())
         .manage(CurrentHotkey(Mutex::new(default_shortcut())))
         .manage(RepeatHotkey(Mutex::new(repeat_shortcut_for(
             &default_shortcut(),
         ))))
+        .manage(UndoHotkey(Mutex::new(default_undo_shortcut())))
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_shell::init())
@@ -64,9 +106,31 @@ fn main() {
                         .lock()
                         .ok()
                         .map(|g| g.clone());
+                    // The user's own hotkeys are matched FIRST. The undo shortcut is
+                    // a fixed default the user never chose, so if they have bound
+                    // the quick-edit hotkey to the same combination, theirs wins —
+                    // checking undo first silently swallowed their main hotkey and
+                    // the popup simply stopped opening.
                     let is_repeat = repeat.as_ref().is_some_and(|r| r == shortcut);
                     let is_main = current.as_ref().is_some_and(|c| c == shortcut);
+
                     if !is_repeat && !is_main {
+                        let undo = app.state::<UndoHotkey>().0.lock().ok().map(|g| *g);
+                        if undo.as_ref().is_some_and(|u| u == shortcut) {
+                            // Undo does its own hide-and-settle before injecting, so
+                            // it must not run on the shortcut handler's thread.
+                            let app = app.clone();
+                            thread::spawn(move || {
+                                let state = app.state::<autocorrect::AutocorrectState>();
+                                match autocorrect::autocorrect_undo_last(app.clone(), state) {
+                                    Ok(true) => eprintln!("[r3write] autocorrect reverted"),
+                                    // Nothing pending is the normal case, not an
+                                    // error: the user has typed on since.
+                                    Ok(false) => {}
+                                    Err(e) => eprintln!("[r3write] autocorrect undo failed: {e}"),
+                                }
+                            });
+                        }
                         return;
                     }
                     let app = app.clone();
@@ -89,6 +153,12 @@ fn main() {
                 Ok(_) => eprintln!("[r3write] registered Ctrl+Alt+Shift+G (repeat)"),
                 Err(e) => eprintln!("[r3write] repeat shortcut register failed: {e}"),
             }
+
+            // NOT registered here. The undo shortcut is claimed only while
+            // autocorrect is actually on (see `autocorrect::apply`) — a global
+            // shortcut is a system-wide resource, and holding Ctrl+Alt+Z hostage
+            // for a feature the user never enabled would break it in whatever app
+            // they already use it for.
 
             let show_item = MenuItem::with_id(app, "tray:show", "Show R3write", true, None::<&str>)?;
             let bmc_item = MenuItem::with_id(
@@ -161,6 +231,11 @@ fn main() {
             }
             builder.build(app)?;
 
+            // Loads the persisted correction log only. The keyboard hook stays
+            // uninstalled until the frontend both confirms an active license and
+            // pushes a config with `enabled: true`.
+            autocorrect::init(app.handle());
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -181,6 +256,19 @@ fn main() {
             secret_set,
             secret_get,
             secret_delete,
+            autocorrect::autocorrect_set_config,
+            autocorrect::autocorrect_get_config,
+            autocorrect::autocorrect_set_license_active,
+            autocorrect::autocorrect_status,
+            autocorrect::autocorrect_get_log,
+            autocorrect::autocorrect_clear_log,
+            autocorrect::autocorrect_undo_last,
+            autocorrect::autocorrect_installer_opt_in,
+            autocorrect::autocorrect_dismiss_bubble,
+            autocorrect::autocorrect_llm_suggestion,
+            autocorrect::autocorrect_accept_suggestion,
+            autocorrect::autocorrect_running_apps,
+            autocorrect::autocorrect_risky_entries,
         ])
         .run(tauri::generate_context!())
         .expect("error while running R3write");
@@ -250,13 +338,7 @@ fn capture_selection(app: &AppHandle) -> Result<String, String> {
     // The user is still physically holding the modifiers from the hotkey.
     // If we send Ctrl+C now, Windows sees the held Alt and the copy is a
     // no-op. Force-release the modifiers and wait briefly for the OS to settle.
-    {
-        let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
-        let _ = enigo.key(Key::Alt, Direction::Release);
-        let _ = enigo.key(Key::Control, Direction::Release);
-        let _ = enigo.key(Key::Shift, Direction::Release);
-        let _ = enigo.key(Key::Meta, Direction::Release);
-    }
+    autocorrect::inject::release_modifiers()?;
     thread::sleep(Duration::from_millis(60));
 
     let original = app.clipboard().read_text().ok();
@@ -271,7 +353,7 @@ fn capture_selection(app: &AppHandle) -> Result<String, String> {
     let _ = app.clipboard().write_text(CLIPBOARD_SENTINEL.to_string());
     thread::sleep(Duration::from_millis(20));
 
-    send_modifier_combo(Key::Control, Key::Unicode('c'))?;
+    autocorrect::inject::modifier_combo(VK_CONTROL, VK_C)?;
 
     // Poll the clipboard for change instead of sleeping a fixed amount. On a
     // fast machine this returns in ~10ms (the OS finishes the copy quickly);
@@ -326,7 +408,7 @@ fn accept_rewrite(
 
     app.clipboard().write_text(text).map_err(|e| e.to_string())?;
     thread::sleep(Duration::from_millis(40));
-    send_modifier_combo(Key::Control, Key::Unicode('v'))?;
+    autocorrect::inject::modifier_combo(VK_CONTROL, VK_V)?;
     thread::sleep(Duration::from_millis(140));
 
     let original = state.0.lock().map_err(|e| e.to_string())?.clone();
@@ -374,13 +456,13 @@ fn set_clipboard(app: AppHandle, text: String) -> Result<(), String> {
     app.clipboard().write_text(text).map_err(|e| e.to_string())
 }
 
-fn send_modifier_combo(modifier: Key, key: Key) -> Result<(), String> {
-    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
-    enigo.key(modifier, Direction::Press).map_err(|e| e.to_string())?;
-    enigo.key(key, Direction::Click).map_err(|e| e.to_string())?;
-    enigo.key(modifier, Direction::Release).map_err(|e| e.to_string())?;
-    Ok(())
-}
+// `send_modifier_combo` used to live here and drive enigo directly. It now routes
+// through `autocorrect::inject`, which stamps every event with R3W_INJECT_TAG.
+//
+// This is not cosmetic. enigo offers no way to set `dwExtraInfo`, so with the
+// keyboard hook installed the Ctrl+C above and the Ctrl+V in `accept_rewrite`
+// would come back through the hook indistinguishable from the user typing — the
+// quick-edit paste would feed itself into the autocorrect buffer.
 
 fn cursor_position(app: &AppHandle) -> (i32, i32) {
     if let Ok(pos) = app.cursor_position() {

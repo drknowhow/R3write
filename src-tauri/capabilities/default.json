@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capabilities granted to R3write windows.",
-  "windows": ["main", "quick-edit"],
+  "windows": ["main", "quick-edit", "autocorrect-bubble"],
   "permissions": [
     "core:default",
     "core:event:default",

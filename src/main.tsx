@@ -37,6 +37,24 @@ import {
 } from "lucide-react";
 import { useTheme, useThemeFollower, type ThemeChoice } from "./theme";
 import { useLicense, LS_CHECKOUT_URL, type LicenseState, type UseLicense } from "./license";
+import {
+  APPLIED_EVENT,
+  ARBITRATE_EVENT,
+  REVERTED_EVENT,
+  clearLog,
+  getLog,
+  installerOptIn,
+  riskyEntries,
+  runningApps,
+  sendLlmSuggestion,
+  setConfig as setAutocorrectConfig,
+  setLicenseActive,
+  type AppliedEvent,
+  type ArbitrateEvent,
+  type CorrectionEntry,
+  type RevertedEvent,
+  type RunningApp,
+} from "./autocorrect";
 import "./index.css";
 import appIconUrl from "./icon.png";
 
@@ -531,6 +549,22 @@ interface OllamaSettings {
   hasOnboarded: boolean;
   originalExpanded: boolean;
   popupAnchor: PopupAnchor;
+  // Autocorrect. Mirrored into Rust via `autocorrect_set_config` — Rust owns the
+  // typing buffer and dictionary, these are just the user's knobs. Note there is
+  // no separate protected-terms field: autocorrect reuses `protectedTerms` above,
+  // so a term you protect from the rewriter is protected from autocorrect too.
+  autocorrectEnabled: boolean;
+  autocorrectMinWordLength: number;
+  autocorrectShowBubble: boolean;
+  /** Ask the model about words the dictionary cannot judge. Separately opt-in
+   *  from `autocorrectEnabled`, because this is what sends text off the machine. */
+  autocorrectLlmAssist: boolean;
+  autocorrectAllowlist: string;
+  autocorrectLogRetention: number;
+  /** Whether the installer's opt-in has been applied to `autocorrectEnabled`
+   *  yet. Stops the installer choice from re-asserting itself every launch and
+   *  overriding what the user has since chosen in Settings. */
+  autocorrectSeeded: boolean;
 }
 
 const DEFAULT_SETTINGS: OllamaSettings = {
@@ -554,6 +588,22 @@ const DEFAULT_SETTINGS: OllamaSettings = {
   hasOnboarded: false,
   originalExpanded: false,
   popupAnchor: "mouse",
+  // Off by default. The hook is never installed until the user opts in AND the
+  // license is active — see `autocorrect::apply` in Rust.
+  autocorrectEnabled: false,
+  // 3, not 4: "teh" is the commonest typo in English and is three letters. The
+  // frequency-dominance rule in Rust is what keeps short words safe.
+  autocorrectMinWordLength: 3,
+  autocorrectShowBubble: true,
+  // Off even when autocorrect is on. Nothing leaves the machine until the user
+  // turns this on specifically.
+  autocorrectLlmAssist: false,
+  // Fail-closed. Browsers and Electron apps must NOT be added until the UIA
+  // password probe lands — `ES_PASSWORD` cannot see into their text fields, so
+  // allowlisting them means typing into password boxes blind.
+  autocorrectAllowlist: "notepad.exe",
+  autocorrectLogRetention: 200,
+  autocorrectSeeded: false,
 };
 
 const SETTINGS_KEY = "r3write.settings.v1";
@@ -992,6 +1042,51 @@ class GeminiClient implements LLMClient {
   }
 }
 
+// Deliberately not BASE_SYSTEM_PROMPT. That one is for rewriting a passage the
+// user asked about; this is a single-word judgement where any extra prose in the
+// reply has to be parsed back out, and a model that starts explaining itself makes
+// the answer unusable.
+const ARBITRATION_SYSTEM_PROMPT =
+  "You are a proofreader. You are given a sentence fragment and one TARGET word from it. " +
+  "Decide whether the TARGET is the correct word in that context. " +
+  "Consider only word choice and grammatical form (their/there, form/from, singular/plural). " +
+  "Reply with the corrected TARGET word alone, nothing else. " +
+  "If the TARGET is already correct, reply with it unchanged. " +
+  "Never reply with more than one word, and never explain.";
+
+/// Ask the configured provider to judge one word in context.
+///
+/// Returns the replacement word, or null if the model agreed with what was typed
+/// or answered in a shape we cannot trust. Bounded hard: a single word in, a single
+/// word out, and anything else is discarded rather than guessed at.
+async function arbitrateWord(
+  settings: OllamaSettings,
+  word: string,
+  context: string,
+  signal: AbortSignal,
+): Promise<string | null> {
+  const client = makeClient(settings);
+  let reply = "";
+  for await (const chunk of client.chat(
+    [
+      { role: "system", content: ARBITRATION_SYSTEM_PROMPT },
+      { role: "user", content: `Fragment: ...${context}\nTARGET: ${word}` },
+    ],
+    { signal },
+  )) {
+    reply += chunk;
+    // One word is all that can be valid; stop paying for tokens past that.
+    if (reply.length > 64) break;
+  }
+
+  const answer = reply.trim().replace(/^["'`]+|["'`.,!?]+$/g, "");
+  // Refuse anything that is not a single plausible word. A model that explains
+  // itself, apologises, or returns a phrase must not reach the user's document.
+  if (!answer || /\s/.test(answer) || answer.length > word.length + 8) return null;
+  if (answer.toLowerCase() === word.toLowerCase()) return null;
+  return answer;
+}
+
 function makeClient(settings: OllamaSettings): LLMClient {
   if (isOpenAIStyle(settings.provider)) return new OpenAIStyleClient(settings);
   if (settings.provider === "anthropic") return new AnthropicClient(settings);
@@ -1361,6 +1456,108 @@ export function App() {
   const [showInfo, setShowInfo] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState<boolean>(() => !loadSettings().hasOnboarded);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
+  const [panelTab, setPanelTab] = useState<PanelTab>("history");
+
+  // ---- Autocorrect <-> Rust ----------------------------------------------
+  //
+  // Rust owns the typing buffer, dictionary, correction log and undo state; the
+  // webviews only render. Two consequences handled here:
+  //
+  //  1. Settings changes must be PUSHED to Rust. Nothing reads them from
+  //     localStorage on the Rust side, and the popup and bubble windows have
+  //     their own React state that never sees this component's.
+  //  2. License status must be pushed too. The keyboard hook refuses to install
+  //     until Rust is told the license is active — gating only the UI would
+  //     leave a keylogger running behind the paywall.
+
+  // First run only: adopt whatever the user ticked in the installer, then mark
+  // it seeded so the installer choice never overrides a later decision here.
+  useEffect(() => {
+    if (settings.autocorrectSeeded) return;
+    let cancelled = false;
+    void installerOptIn()
+      .then((optIn) => {
+        if (cancelled) return;
+        setSettings((s) =>
+          s.autocorrectSeeded ? s : { ...s, autocorrectEnabled: optIn, autocorrectSeeded: true },
+        );
+      })
+      .catch(() => {
+        // No registry value (sideloaded or portable copy) — leave it off and
+        // stop asking.
+        if (!cancelled) setSettings((s) => ({ ...s, autocorrectSeeded: true }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.autocorrectSeeded]);
+
+  useEffect(() => {
+    void setLicenseActive(license.state.status === "active").catch(() => {});
+  }, [license.state.status]);
+
+  // Rust detects which words need context but cannot call a provider itself: the
+  // seven clients, their base URLs and the keyring-backed API keys all live here.
+  // So it emits a request and this window answers. The main window is always
+  // mounted (closing it hides to tray), so it is a reliable place for this.
+  //
+  // Only one window may answer, or the same word would be billed several times.
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const inFlight = new AbortController();
+
+    void listen<ArbitrateEvent>(ARBITRATE_EVENT, (e) => {
+      const p = e.payload;
+      if (!p) return;
+      void (async () => {
+        try {
+          const answer = await arbitrateWord(
+            settingsRef.current,
+            p.word,
+            p.context,
+            inFlight.signal,
+          );
+          await sendLlmSuggestion(p.id, answer);
+        } catch (err) {
+          console.error("[r3write] arbitration failed:", err);
+          // Always answer, even on failure — Rust holds a pending slot for this
+          // id and would otherwise keep it until the next word is committed.
+          await sendLlmSuggestion(p.id, null).catch(() => {});
+        }
+      })();
+    }).then((u) => {
+      unlisten = u;
+    });
+
+    return () => {
+      unlisten?.();
+      inFlight.abort();
+    };
+  }, []);
+
+  useEffect(() => {
+    void setAutocorrectConfig({
+      enabled: settings.autocorrectEnabled,
+      minWordLength: settings.autocorrectMinWordLength,
+      showBubble: settings.autocorrectShowBubble,
+      llmAssist: settings.autocorrectLlmAssist,
+      allowlist: settings.autocorrectAllowlist,
+      // Shared with the rewriter's glossary — a term you protect there is
+      // protected from autocorrect too.
+      protectedTerms: settings.protectedTerms,
+      logRetention: settings.autocorrectLogRetention,
+    }).catch((e) => console.error("[r3write] autocorrect config push failed:", e));
+  }, [
+    settings.autocorrectEnabled,
+    settings.autocorrectMinWordLength,
+    settings.autocorrectShowBubble,
+    settings.autocorrectLlmAssist,
+    settings.autocorrectAllowlist,
+    settings.protectedTerms,
+    settings.autocorrectLogRetention,
+  ]);
 
   // Hydrate apiKey from Windows Credential Manager keyed by the active
   // provider. Each provider has its own keyring entry so switching providers
@@ -1584,20 +1781,28 @@ export function App() {
           }}
         />
 
-        <HistoryListPanel
-          entries={history}
-          revertError={revertError}
-          onRevert={revert}
-          onClear={() => {
-            // Wipe storage synchronously — don't rely on the saveHistory
-            // useEffect timing, in case the window is closed before React
-            // flushes the next render.
-            clearHistoryStorage();
-            setHistory([]);
-            setRevertError(null);
-          }}
-          hotkey={settings.hotkey}
-        />
+        {panelTab === "history" ? (
+          <HistoryListPanel
+            entries={history}
+            revertError={revertError}
+            onRevert={revert}
+            onClear={() => {
+              // Wipe storage synchronously — don't rely on the saveHistory
+              // useEffect timing, in case the window is closed before React
+              // flushes the next render.
+              clearHistoryStorage();
+              setHistory([]);
+              setRevertError(null);
+            }}
+            hotkey={settings.hotkey}
+            onTabChange={setPanelTab}
+          />
+        ) : (
+          <AutocorrectLogPanel
+            enabled={settings.autocorrectEnabled}
+            onTabChange={setPanelTab}
+          />
+        )}
 
         <footer className="flex h-8 shrink-0 items-center justify-between border-t border-border bg-bg-elev px-3 text-[11px] text-fg-muted">
           <span>Like R3write? Tip the dev.</span>
@@ -2117,7 +2322,7 @@ function SettingsDialog({
   const testAbortRef = useRef<AbortController | null>(null);
   const testCancelledRef = useRef(false);
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
-  type SettingsTab = "model" | "hotkey" | "feedback" | "templates" | "glossary" | "advanced" | "license" | "support";
+  type SettingsTab = "model" | "hotkey" | "feedback" | "templates" | "glossary" | "autocorrect" | "advanced" | "license" | "support";
   const [tab, setTab] = useState<SettingsTab>("model");
   const [newTemplateName, setNewTemplateName] = useState("");
   const [newTemplatePrompt, setNewTemplatePrompt] = useState("");
@@ -2354,6 +2559,7 @@ function SettingsDialog({
                           { id: "feedback", label: "Feedback" },
                           { id: "templates", label: "Templates" },
                           { id: "glossary", label: "Glossary" },
+                          { id: "autocorrect", label: "Autocorrect" },
                           { id: "advanced", label: "Advanced" },
                           { id: "license", label: "License" },
                           { id: "support", label: "Support" },
@@ -2787,6 +2993,164 @@ function SettingsDialog({
                     </div>
                   )}
 
+                  {tab === "autocorrect" && (
+                    <div role="tabpanel" className="flex flex-col gap-3">
+                      <div className="rounded-md border border-border bg-bg-subtle p-3 text-[12px] leading-relaxed text-fg-muted">
+                        <p>
+                          Autocorrect watches what you type in the applications you list below and
+                          silently fixes spelling mistakes. Corrections are made{" "}
+                          <span className="font-medium text-fg">entirely on this machine</span> using
+                          a built-in dictionary — nothing you type is sent anywhere.
+                        </p>
+                        <p className="mt-2">
+                          Turning it on means R3write monitors keyboard input system-wide. It stays
+                          off until you switch it on here.
+                        </p>
+                      </div>
+
+                      <ToggleRow
+                        label="Enable system-wide autocorrect"
+                        hint="Fixes a misspelled word once you finish it with a space, punctuation, or Enter."
+                        checked={draft.autocorrectEnabled}
+                        onChange={(v) => update({ autocorrectEnabled: v })}
+                      />
+
+                      <ToggleRow
+                        label="Show a bubble when text is corrected"
+                        hint="A small toast in the corner showing what changed, with an Undo button. Fades after 4 seconds."
+                        checked={draft.autocorrectShowBubble}
+                        onChange={(v) => update({ autocorrectShowBubble: v })}
+                      />
+
+                      <div className="rounded-md border border-border bg-bg p-3">
+                        <ToggleRow
+                          label="Ask the model about confusable words"
+                          hint="their/there, form/from, and plurals like companys. These are spelled correctly, so the offline dictionary cannot judge them."
+                          checked={draft.autocorrectLlmAssist}
+                          onChange={(v) => update({ autocorrectLlmAssist: v })}
+                        />
+                        <p className="mt-2 text-[11px] leading-relaxed text-fg-muted">
+                          <span className="font-medium text-fg">
+                            This sends text to {PROVIDER_LABELS[draft.provider]}.
+                          </span>{" "}
+                          When one of these words is typed, R3write sends that word and up to
+                          80 characters of what precedes it to your configured provider. Nothing
+                          else is sent, and at most one word every two seconds.
+                        </p>
+                        <p className="mt-1.5 text-[11px] leading-relaxed text-fg-muted">
+                          Results are only ever <span className="font-medium text-fg">suggested</span> —
+                          the model can never change your text on its own. A reply takes up to a
+                          couple of seconds, by which point you have typed on, so accepting is
+                          always your explicit choice.
+                        </p>
+                      </div>
+
+                      <Field label="Applications to correct in">
+                        <textarea
+                          value={draft.autocorrectAllowlist}
+                          onChange={(e) => update({ autocorrectAllowlist: e.target.value })}
+                          rows={4}
+                          spellCheck={false}
+                          placeholder={"One executable name per line, e.g.\nnotepad.exe\noutlook.exe"}
+                          className={`${inputCls} resize-y font-mono text-[12px]`}
+                        />
+                        <p className="mt-1 text-[11px] text-fg-subtle">
+                          An allowlist, not a blocklist — R3write corrects{" "}
+                          <span className="font-medium">only</span> in the apps named here, and an
+                          empty list corrects nowhere.
+                        </p>
+                        <AppPicker
+                          allowlist={draft.autocorrectAllowlist}
+                          onAdd={(exe) =>
+                            update({
+                              autocorrectAllowlist: `${draft.autocorrectAllowlist.replace(/\s*$/, "")}\n${exe}`.trim(),
+                            })
+                          }
+                        />
+                      </Field>
+
+                      <RiskyAllowlistWarning allowlist={draft.autocorrectAllowlist} />
+
+                      <div className="rounded-md border border-border bg-bg p-3 text-[11px] leading-relaxed text-fg-muted">
+                        <p className="font-medium text-fg">Where corrections never happen</p>
+                        <p className="mt-1">
+                          Password fields, elevated windows, remote-desktop sessions and IME / CJK
+                          input are refused regardless of this list. These are not bugs.
+                        </p>
+                        <p className="mt-1.5">
+                          Browsers and Electron apps (Chrome, Slack, VS Code) can be added. Password
+                          fields inside them are detected via Windows UI Automation rather than the
+                          native window style, and if that detection can&rsquo;t answer, R3write
+                          declines to type rather than guess. What is{" "}
+                          <span className="font-medium">not</span> yet proven is replacement itself:
+                          autocomplete dropdowns can swallow keystrokes or replace more text than
+                          expected.
+                        </p>
+                      </div>
+
+                      <Field label="Shortest word to correct">
+                        <input
+                          type="number"
+                          min={3}
+                          max={12}
+                          value={draft.autocorrectMinWordLength}
+                          onChange={(e) =>
+                            update({
+                              autocorrectMinWordLength: Math.max(
+                                3,
+                                Math.min(12, Number(e.target.value) || 3),
+                              ),
+                            })
+                          }
+                          className={inputCls}
+                        />
+                        <p className="mt-1 text-[11px] text-fg-subtle">
+                          Raise this if short words get corrected in ways you don&rsquo;t want. A
+                          correction only fires when one candidate is far more common than any
+                          other, so genuinely ambiguous typos are left alone at any setting.
+                        </p>
+                      </Field>
+
+                      <Field label="Corrections to keep in the log">
+                        <input
+                          type="number"
+                          min={0}
+                          max={2000}
+                          value={draft.autocorrectLogRetention}
+                          onChange={(e) =>
+                            update({
+                              autocorrectLogRetention: Math.max(
+                                0,
+                                Math.min(2000, Number(e.target.value) || 0),
+                              ),
+                            })
+                          }
+                          className={inputCls}
+                        />
+                        <p className="mt-1 text-[11px] text-fg-subtle">
+                          Only the before/after words and the app name are stored.{" "}
+                          <span className="font-medium">Your keystrokes are never written to disk.</span>
+                        </p>
+                      </Field>
+
+                      <div className="rounded-md border border-border bg-bg p-3 text-[11px] leading-relaxed text-fg-muted">
+                        <p>
+                          Press{" "}
+                          <kbd className="rounded border border-border bg-bg-subtle px-1.5 py-0.5 font-mono text-[10px] text-fg">
+                            Ctrl+Alt+Z
+                          </kbd>{" "}
+                          to undo the last correction. It works until you finish the next word, after
+                          which the bubble disappears — past that point R3write can no longer tell
+                          where the correction was, and undoing would damage whatever you typed since.
+                        </p>
+                        <p className="mt-1.5">
+                          Words listed under <span className="font-medium text-fg">Glossary → Protected terms</span>{" "}
+                          are never corrected.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
                   {tab === "advanced" && (
                     <div role="tabpanel" className="flex flex-col gap-3">
                       <ToggleRow
@@ -2994,6 +3358,148 @@ function SettingsDialog({
         </AnimatePresence>
       </Dialog.Portal>
     </Dialog.Root>
+  );
+}
+
+/// Lists running applications so adding one does not require knowing its
+/// executable name. Loaded on open rather than on mount — enumerating every
+/// top-level window is not something to do while the dialog is merely sitting there.
+function AppPicker({
+  allowlist,
+  onAdd,
+}: {
+  allowlist: string;
+  onAdd: (exe: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [apps, setApps] = useState<RunningApp[] | null>(null);
+
+  const already = useMemo(
+    () =>
+      new Set(
+        allowlist
+          .split("\n")
+          .map((l) => l.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    [allowlist],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    setApps(null);
+    void runningApps()
+      .then(setApps)
+      .catch(() => setApps([]));
+  }, [open]);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="mt-2 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-fg-muted transition hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      >
+        Add application…
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-2 rounded-md border border-border bg-bg">
+      <div className="flex items-center justify-between border-b border-border px-2 py-1.5">
+        <span className="text-[11px] font-medium text-fg-muted">Running applications</span>
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          aria-label="Close"
+          className="rounded p-0.5 text-fg-subtle hover:text-fg"
+        >
+          <X size={12} />
+        </button>
+      </div>
+      <div className="max-h-44 overflow-y-auto p-1">
+        {apps === null && <p className="p-2 text-[11px] text-fg-subtle">Looking…</p>}
+        {apps?.length === 0 && (
+          <p className="p-2 text-[11px] text-fg-subtle">No windowed applications found.</p>
+        )}
+        {apps?.map((a) => {
+          const added = already.has(a.exe.toLowerCase());
+          return (
+            <button
+              key={a.exe}
+              type="button"
+              disabled={added}
+              onClick={() => {
+                onAdd(a.exe);
+                setOpen(false);
+              }}
+              className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-[12px] transition hover:bg-bg-subtle disabled:opacity-40 disabled:hover:bg-transparent"
+            >
+              <span className="min-w-0 flex-1 truncate text-fg">
+                {a.title}
+                {a.risky && (
+                  <span
+                    title="Terminal — see the warning below"
+                    className="ml-1.5 text-amber-500"
+                  >
+                    ⚠
+                  </span>
+                )}
+              </span>
+              <span className="shrink-0 font-mono text-[10px] text-fg-subtle">
+                {added ? "added" : a.exe}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/// Shown only when a terminal is actually on the allowlist.
+///
+/// R3write does not block terminals — it is the user's machine — but the two
+/// risks are specific enough, and quiet enough, that discovering them by accident
+/// would be the worst way to learn about them.
+function RiskyAllowlistWarning({ allowlist }: { allowlist: string }) {
+  const [risky, setRisky] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void riskyEntries(allowlist)
+      .then((r) => {
+        if (!cancelled) setRisky(r);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [allowlist]);
+
+  if (risky.length === 0) return null;
+
+  return (
+    <div
+      role="alert"
+      className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-[11px] leading-relaxed text-fg"
+    >
+      <p className="font-medium">
+        Terminal on the list: {risky.join(", ")}
+      </p>
+      <p className="mt-1 text-fg-muted">
+        A shell password prompt is not a password <em>field</em> — at a{" "}
+        <span className="font-mono">sudo</span>, <span className="font-mono">ssh</span> or
+        credential prompt there is nothing for R3write to detect, so what you type there is
+        read like any other text. The protection that covers every other application does not
+        exist here.
+      </p>
+      <p className="mt-1.5 text-fg-muted">
+        And Enter runs the line. A correction landing on a command, path or flag means
+        executing something you didn&rsquo;t type.
+      </p>
+    </div>
   );
 }
 
@@ -4389,18 +4895,59 @@ const HistoryRow = React.memo(
     Math.floor(prev.now / 30000) === Math.floor(next.now / 30000),
 );
 
+// Which list the main window is showing. Rewrites and autocorrections are
+// different enough to keep apart — one is something you asked for, the other is
+// something that happened to you — but they compete for the same small window,
+// so they share a header rather than stacking two.
+type PanelTab = "history" | "autocorrect";
+
+function PanelTabs({
+  value,
+  onChange,
+}: {
+  value: PanelTab;
+  onChange: (t: PanelTab) => void;
+}) {
+  const tabs: { id: PanelTab; label: string }[] = [
+    { id: "history", label: "History" },
+    { id: "autocorrect", label: "Autocorrect" },
+  ];
+  return (
+    <div role="tablist" className="flex items-center gap-1">
+      {tabs.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          role="tab"
+          aria-selected={value === t.id}
+          onClick={() => onChange(t.id)}
+          className={`rounded-md px-2 py-1 text-xs font-semibold uppercase tracking-wide transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+            value === t.id
+              ? "bg-bg-subtle text-fg"
+              : "text-fg-muted hover:bg-bg-subtle hover:text-fg"
+          }`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function HistoryListPanel({
   entries,
   revertError,
   onRevert,
   onClear,
   hotkey,
+  onTabChange,
 }: {
   entries: HistoryEntry[];
   revertError: string | null;
   onRevert: (e: HistoryEntry) => void;
   onClear: () => void;
   hotkey: HotkeyBinding;
+  onTabChange: (t: PanelTab) => void;
 }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -4423,7 +4970,7 @@ function HistoryListPanel({
   return (
     <section className="flex flex-1 flex-col overflow-hidden bg-bg-elev text-fg">
       <div className="flex h-10 items-center justify-between border-b border-border px-4">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-fg-muted">History</h2>
+        <PanelTabs value="history" onChange={onTabChange} />
         {entries.length > 0 &&
           (confirmClear ? (
             <button
@@ -4496,3 +5043,202 @@ function HistoryListPanel({
 // Vite produce two bundles: the popup no longer drags in the main window's
 // SettingsDialog / history UI, and the main window no longer drags in the
 // streaming-popup machinery.
+
+// ---------- Autocorrect log ----------
+//
+// Rust owns this list — corrections originate there, and the log is persisted to
+// the app data dir rather than localStorage precisely because `r3write.history.v1`
+// is reachable only from this webview. We fetch once and then follow events.
+
+function AutocorrectLogPanel({
+  enabled,
+  onTabChange,
+}: {
+  enabled: boolean;
+  onTabChange: (t: PanelTab) => void;
+}) {
+  const [entries, setEntries] = useState<CorrectionEntry[]>([]);
+  const [now, setNow] = useState(Date.now());
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+  /** Highest event version applied. The bubble window subscribes to the same
+   *  stream; the stamp makes out-of-order delivery impossible rather than
+   *  merely unlikely. */
+  const versionRef = useRef(0);
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 30000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    // Merge by id rather than replace. The initial fetch and the live listener are
+    // two unordered async sources over the same log, so a correction landing while
+    // `getLog()` is in flight otherwise appears twice — once appended by the event,
+    // once again in the snapshot — with duplicate React keys.
+    //
+    // The version stamp cannot help here: `versionRef` restarts at 0 on every mount
+    // and the fetched snapshot carries no version to compare against.
+    const mergeById = (prev: CorrectionEntry[], incoming: CorrectionEntry[]) => {
+      const seen = new Set(prev.map((e) => e.id));
+      const fresh = incoming.filter((e) => !seen.has(e.id));
+      return fresh.length === 0 ? prev : [...prev, ...fresh];
+    };
+
+    void getLog()
+      .then((fetched) => setEntries((prev) => mergeById(prev, fetched)))
+      .catch(() => {});
+
+    let unApplied: (() => void) | undefined;
+    let unReverted: (() => void) | undefined;
+
+    void listen<AppliedEvent>(APPLIED_EVENT, (e) => {
+      const p = e.payload;
+      if (!p || p.version <= versionRef.current) return;
+      versionRef.current = p.version;
+      setEntries((prev) => mergeById(prev, [p.entry]));
+    }).then((u) => {
+      unApplied = u;
+    });
+
+    void listen<RevertedEvent>(REVERTED_EVENT, (e) => {
+      const p = e.payload;
+      if (!p) return;
+      setEntries((prev) =>
+        prev.map((x) => (x.id === p.id ? { ...x, reverted: true } : x)),
+      );
+    }).then((u) => {
+      unReverted = u;
+    });
+
+    return () => {
+      unApplied?.();
+      unReverted?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!confirmClear) return;
+    const t = window.setTimeout(() => setConfirmClear(false), 4000);
+    return () => window.clearTimeout(t);
+  }, [confirmClear]);
+  useEffect(() => {
+    if (entries.length === 0) setConfirmClear(false);
+  }, [entries.length]);
+
+  // Copy rather than re-inject. In-place revert is only meaningful while the
+  // correction is still the last thing typed — which is what the bubble's Undo
+  // and Ctrl+Alt+Z are for. By the time you are reading this list, the caret has
+  // long since moved, and re-injecting would damage whatever is under it now.
+  const copyOriginal = useCallback(async (e: CorrectionEntry) => {
+    try {
+      await invoke("set_clipboard", { text: e.original });
+      setCopied(e.id);
+      window.setTimeout(() => setCopied((c) => (c === e.id ? null : c)), 1600);
+    } catch {}
+  }, []);
+
+  const newestFirst = useMemo(() => [...entries].reverse(), [entries]);
+
+  return (
+    <section className="flex flex-1 flex-col overflow-hidden bg-bg-elev text-fg">
+      <div className="flex h-10 items-center justify-between border-b border-border px-4">
+        <PanelTabs value="autocorrect" onChange={onTabChange} />
+        {entries.length > 0 &&
+          (confirmClear ? (
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmClear(false);
+                void clearLog().then(() => setEntries([])).catch(() => {});
+              }}
+              autoFocus
+              className="inline-flex items-center gap-1 rounded-md bg-danger-bg px-2 py-1 text-[11px] font-semibold text-danger ring-1 ring-danger/40 transition hover:bg-danger/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/60"
+            >
+              <Trash2 size={12} />
+              Confirm · permanent
+            </button>
+          ) : (
+            <Tooltip.Root>
+              <Tooltip.Trigger asChild>
+                <button
+                  type="button"
+                  onClick={() => setConfirmClear(true)}
+                  aria-label="Clear all"
+                  className="grid h-7 w-7 place-items-center rounded-md text-fg-muted hover:bg-bg-subtle hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </Tooltip.Trigger>
+              <Tooltip.Portal>
+                <Tooltip.Content
+                  sideOffset={6}
+                  className="rounded-md border border-border bg-bg-elev px-2 py-1 text-xs text-fg shadow-md"
+                >
+                  Clear all (permanent)
+                </Tooltip.Content>
+              </Tooltip.Portal>
+            </Tooltip.Root>
+          ))}
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-4 py-3">
+        {!enabled && (
+          <div className="mb-3 rounded-md border border-border bg-bg-subtle p-3 text-[12px] text-fg-muted">
+            Autocorrect is off. Turn it on in{" "}
+            <span className="font-medium text-fg">Settings → Autocorrect</span>.
+          </div>
+        )}
+
+        {newestFirst.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center px-4 text-center">
+            <Sparkle size={20} className="mb-2 text-fg-subtle" />
+            <p className="text-sm text-fg-muted">No corrections yet</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-fg-subtle">
+              Spelling fixes made while you type will be listed here, newest first.
+            </p>
+          </div>
+        ) : (
+          <ul className="space-y-3">
+            {newestFirst.map((e) => (
+              <li
+                key={e.id}
+                className="rounded-lg border border-border bg-bg-subtle p-3 text-sm transition hover:border-border-strong"
+              >
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <span className="truncate text-xs font-medium text-fg-muted">
+                    {e.app || "unknown app"} · {timeAgo(e.timestamp, now)}
+                  </span>
+                  {e.reverted && (
+                    <span className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-fg-subtle">
+                      reverted
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-fg-muted line-through">{e.original}</span>
+                  <span aria-hidden className="shrink-0 text-fg-subtle">
+                    &rarr;
+                  </span>
+                  <span className="truncate font-medium text-fg">{e.correction}</span>
+                </div>
+
+                <div className="mt-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => void copyOriginal(e)}
+                    className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-fg-muted transition hover:bg-bg hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  >
+                    <RotateCcw size={11} />
+                    {copied === e.id ? "Copied" : "Copy original"}
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
