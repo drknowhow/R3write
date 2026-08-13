@@ -6,6 +6,8 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-08-13
+
 ### Added
 - **System-wide autocorrect — engine (Phase 1).** A `WH_KEYBOARD_LL` hook watches typing in allowlisted applications; when a word is committed with a space, punctuation or Enter, a bundled SymSpell dictionary (82,833 entries, fully offline) decides whether it is a typo and replaces it in place. Off by default, and the hook is never installed until the frontend confirms both an active license and an explicit opt-in. No UI yet — Settings, the correction bubble, and the log panel land in Phases 2–4.
   - Correction fires only where a candidate is at least 10x more frequent than the runner-up. `teh` → `the` qualifies; genuinely ambiguous typos like `cta` (cat/act) are left alone.
