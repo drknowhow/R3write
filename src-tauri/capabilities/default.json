@@ -36,6 +36,7 @@
         { "url": "https://buymeacoffee.com/*" },
         { "url": "https://www.buymeacoffee.com/*" },
         { "url": "https://github.com/*" },
+        { "url": "https://drknowhow.github.io/*" },
         { "url": "https://*.lemonsqueezy.com/*" }
       ]
     }

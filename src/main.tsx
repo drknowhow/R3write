@@ -2066,6 +2066,9 @@ function IconButton({
 
 const BMC_URL = "https://buymeacoffee.com/drknowhow";
 const SPONSORS_URL = "https://github.com/sponsors/drknowhow";
+// Full AI disclosure. The in-app copy is the short form; this is the page that
+// spells out what leaves the machine, and on which path.
+const AI_TRANSPARENCY_URL = "https://drknowhow.github.io/R3write/ai-transparency.html";
 
 function BrandMark({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
   const cls =
@@ -2322,7 +2325,7 @@ function SettingsDialog({
   const testAbortRef = useRef<AbortController | null>(null);
   const testCancelledRef = useRef(false);
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
-  type SettingsTab = "model" | "hotkey" | "feedback" | "templates" | "glossary" | "autocorrect" | "advanced" | "license" | "support";
+  type SettingsTab = "model" | "hotkey" | "feedback" | "templates" | "glossary" | "autocorrect" | "ai" | "advanced" | "license" | "support";
   const [tab, setTab] = useState<SettingsTab>("model");
   const [newTemplateName, setNewTemplateName] = useState("");
   const [newTemplatePrompt, setNewTemplatePrompt] = useState("");
@@ -2560,6 +2563,7 @@ function SettingsDialog({
                           { id: "templates", label: "Templates" },
                           { id: "glossary", label: "Glossary" },
                           { id: "autocorrect", label: "Autocorrect" },
+                          { id: "ai", label: "AI" },
                           { id: "advanced", label: "Advanced" },
                           { id: "license", label: "License" },
                           { id: "support", label: "Support" },
@@ -3148,6 +3152,95 @@ function SettingsDialog({
                           are never corrected.
                         </p>
                       </div>
+                    </div>
+                  )}
+
+                  {tab === "ai" && (
+                    <div role="tabpanel" className="flex flex-col gap-3">
+                      <div className="rounded-md border border-border bg-bg-subtle p-3">
+                        <h3 className="text-sm font-semibold text-fg">R3write is an AI system</h3>
+                        <p className="mt-2 text-[12px] leading-relaxed text-fg-muted">
+                          Every rewrite is produced by a large language model, not by rules. Models
+                          invent specifics that weren't in your text, drop qualifiers that mattered,
+                          and strengthen claims you deliberately hedged. Read the rewrite before you
+                          accept it — the popup's <span className="font-medium text-fg">Diff</span>{" "}
+                          view is there to make that a glance rather than a re-read.
+                        </p>
+                      </div>
+
+                      <div className="rounded-md border border-border bg-bg-subtle p-3">
+                        <h3 className="text-sm font-semibold text-fg">What leaves this machine</h3>
+                        <p className="mt-2 text-[12px] leading-relaxed text-fg-muted">
+                          Right now, rewrites go to{" "}
+                          <span className="font-medium text-fg">
+                            {PROVIDER_LABELS[draft.provider] ?? draft.provider}
+                          </span>
+                          {draft.model ? (
+                            <>
+                              {" "}
+                              using <span className="font-medium text-fg">{draft.model}</span>
+                            </>
+                          ) : null}
+                          .{" "}
+                          {draft.provider === "ollama-local" ? (
+                            <>
+                              That model runs on this machine, so nothing you rewrite leaves it.
+                            </>
+                          ) : (
+                            <>
+                              The text you select, the action's prompt, and your glossary and
+                              protected terms are sent there directly, with your own API key. There
+                              is no R3write server in between — nothing is proxied, mirrored, or
+                              logged anywhere the author can reach. Once text arrives, that
+                              provider's terms govern it, including whether they retain or train on
+                              it.
+                            </>
+                          )}
+                        </p>
+                        <p className="mt-2 text-[12px] leading-relaxed text-fg-muted">
+                          Autocorrect's dictionary is a local lookup and sends nothing.{" "}
+                          {draft.autocorrectLlmAssist ? (
+                            <>
+                              <span className="font-medium text-fg">
+                                Its contextual check is on
+                              </span>
+                              , so confusable words — plus up to 80 characters of preceding context —
+                              also go to the provider above.
+                            </>
+                          ) : (
+                            <>
+                              Its contextual check, the one part that would send text off the
+                              machine, is off.
+                            </>
+                          )}
+                        </p>
+                        <p className="mt-2 text-[12px] leading-relaxed text-fg-muted">
+                          R3write collects no telemetry, analytics, or usage reporting on any path.
+                        </p>
+                      </div>
+
+                      <div className="rounded-md border border-border bg-bg-subtle p-3">
+                        <h3 className="text-sm font-semibold text-fg">R3write was built with AI</h3>
+                        <p className="mt-2 text-[12px] leading-relaxed text-fg-muted">
+                          This application's code, its website, and much of its documentation were
+                          written by its author working with AI coding assistants. Review and
+                          responsibility are the author's; the source is public so that claim is
+                          checkable.
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void openUrl(AI_TRANSPARENCY_URL).catch((e) =>
+                            console.error("[r3write] open AI transparency failed:", e),
+                          );
+                        }}
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-border bg-bg-elev px-3 py-2 text-[12px] font-medium text-fg transition hover:bg-bg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                      >
+                        Read the full AI disclosure
+                        <ExternalLink size={12} className="opacity-70" />
+                      </button>
                     </div>
                   )}
 
@@ -4675,6 +4768,12 @@ export function QuickEdit() {
               ))}
             </div>
           </div>
+          {/* Standing AI disclosure. Lives in the popup chrome rather than in a
+              dismissible notice because it has to be true of every rewrite, not
+              just the first one the user sees. */}
+          <span className="truncate" title="Rewrites are produced by a language model and can be wrong. Review before you use them.">
+            AI-generated · review before use
+          </span>
           <SupportLinks size="xs" />
         </div>
       </div>

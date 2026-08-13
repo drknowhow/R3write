@@ -7,7 +7,8 @@
 <p align="center">
   <strong>Inline AI rewrite for Windows.</strong><br/>
   Select text in any app. Press <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>G</kbd>. Pick an action. Paste the result back.<br/>
-  Local-by-default with free Ollama, multi-provider for speed — Gemini, OpenAI, Anthropic, Groq, OpenRouter, Ollama Cloud.
+  Local-by-default with free Ollama, multi-provider for speed — Gemini, OpenAI, Anthropic, Groq, OpenRouter, Ollama Cloud.<br/>
+  <strong>New in 1.5:</strong> system-wide autocorrect that fixes typos as you type — offline, in the apps you choose, off until you turn it on.
 </p>
 
 <p align="center">
@@ -15,7 +16,8 @@
   <a href="https://github.com/drknowhow/R3write/releases/latest/download/R3write-setup.exe"><strong>Download</strong></a> &nbsp;·&nbsp;
   <a href="https://drknowhow.lemonsqueezy.com/checkout/buy/627f5ad5-2aa2-4503-b79a-245e53abdbb3">Buy activation key</a> &nbsp;·&nbsp;
   <a href="https://github.com/drknowhow/R3write/releases/latest">Release notes</a> &nbsp;·&nbsp;
-  <a href="./CHANGELOG.md">Changelog</a>
+  <a href="./CHANGELOG.md">Changelog</a> &nbsp;·&nbsp;
+  <a href="https://drknowhow.github.io/R3write/ai-transparency.html">AI transparency</a>
 </p>
 
 <p align="center">
@@ -40,6 +42,7 @@
 - **Free by default.** Local Ollama is the zero-cost path — no key, no quota, no network. Cloud providers are opt-in for speed or quality.
 - **Bring your own key.** Every cloud provider uses your own API key, stored per-provider in Windows Credential Manager — never on disk in plain text, never proxied through anyone else's server.
 - **Word-level diff.** See exactly what changed, every time. Green additions, red deletions, on the same surface where you accepted the rewrite.
+- **Typos fixed offline.** Autocorrect matches against a dictionary compiled into the app — 82,833 entries, no network, no model, no key. It runs only in the applications you list, and only after you switch it on.
 
 ## Quick install
 
@@ -63,6 +66,8 @@ npm run tauri:dev
 **Prerequisites:** Windows 10/11 · Node ≥ 20 · Rust stable + MSVC Build Tools · WebView2 (preinstalled on recent Windows).
 
 On first launch a four-step onboarding shows you where to set up a provider. Default is Ollama Cloud (free tier); switch to Local Ollama for zero-cost local inference or any of the other five cloud providers from `Settings → Model → Provider`.
+
+Autocorrect is a separate opt-in. The installer offers it unchecked on an *Optional features* page; that only seeds a preference, so turn it on properly — and choose which applications it runs in — under `Settings → Autocorrect`.
 
 ---
 
@@ -112,6 +117,32 @@ Each provider has its own keyring entry in Windows Credential Manager. Switch pr
 
 Last 20 rewrites with action, time, word-level diff, and one-click Revert (copies the original back to your clipboard for paste-over-the-rewrite). Closing the main window keeps R3write running in the system tray so the global hotkey still fires.
 
+### Autocorrect, system-wide and offline
+
+The rewrite hotkey handles the paragraph you meant to write. Autocorrect handles the word you didn't.
+
+A `WH_KEYBOARD_LL` hook watches typing in the applications *you* list. When a word is committed with a space, punctuation or <kbd>Enter</kbd>, it is checked against a SymSpell dictionary compiled into the binary — 82,833 entries, fully offline — and replaced in place if it is a typo. Capitalisation carries onto the correction, so a sentence-initial `Teh` becomes `The`.
+
+- **Off until you turn it on.** The installer offers it on an *Optional features* page, unchecked. That records a preference and nothing more — the hook is never installed until the app has both an active license and an explicit switch in `Settings → Autocorrect`.
+- **Pick apps from a list**, by name, rather than knowing that Outlook is `outlook.exe`. Ships with Notepad, WordPad, Word and Outlook. Nothing outside your list is buffered, let alone corrected.
+- **Undo that expires on purpose.** A toast in the bottom-right shows `teh → the` with an **Undo** button; <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Z</kbd> reverts the last correction whether the toast is up or not. Both retire on any buffer invalidation *and* on the next committed word — exactly when reverting would stop being safe.
+- **Ranked by typo shape, not just frequency.** Candidates are scored by corpus frequency weighted by the mechanical shape of the edit — transpositions and doubled keystrokes first, adjacent-key slips next, arbitrary substitutions last. Ambiguous words are left alone, and words that look like intended plurals are never quietly made singular (`companys` does not become `company`).
+- **A correction log**, not a keystroke log. The typing buffer is in memory, capped, and cleared on every invalidation; raw keystrokes are never written to disk. The main window's panel header switches between **History** (rewrites you asked for) and **Autocorrect** (fixes that happened while you typed).
+
+**Where it refuses to run.** The feature fails closed — when a check cannot answer, that counts as a refusal:
+
+| Context | Behaviour |
+|---|---|
+| Password fields | Refused. Both the Win32 `ES_PASSWORD` style and a UI Automation `IsPassword` probe are consulted; **either** saying "password" refuses, and **neither** being able to answer refuses too. |
+| Elevated windows | Refused — a non-elevated process cannot send input to one. |
+| Remote desktop sessions | Refused. |
+| IME / CJK composition | Refused — no single committed word to correct. |
+| Browsers and Electron apps | Refused for now; Windows only reports password fields for native text boxes and Chromium draws its own. |
+| Apps not on your list | Not corrected, and not buffered. |
+| Terminals | **Allowed, flagged, and off the default list.** A shell password prompt is not a password *field*, so nothing can detect it; and <kbd>Enter</kbd> runs the line, so a correction landing on a path or a flag executes something you didn't type. |
+
+**Optional contextual check (off by default).** Real-word errors (`form` for `from`) and plural morphology are spelled correctly, so the offline dictionary has nothing to say. With `Settings → Autocorrect → Ask the model about confusable words` on, those specific words — plus up to 80 characters of preceding context — go to your configured provider. It fires for a short list of known confusables, at most once every two seconds, and can only ever **suggest**: the reply appears in the bubble behind an **Apply** button, because by the time it arrives (300–2000 ms) the caret has moved. This is the one part of autocorrect that sends anything off the machine, which is why it is a separate switch from the master one.
+
 ---
 
 ## Power features
@@ -147,7 +178,8 @@ Each window loads its own HTML and JS entry (`index.html` + `quick-edit.html`) s
 - **Multi-page Vite build** &mdash; separate entries per window
 - **Radix UI + Framer Motion + Lucide React** &mdash; accessible primitives, animations, icons
 - **`marked` + `DOMPurify` + `diff`** &mdash; Markdown rendering and inline diff
-- **enigo** &mdash; keyboard simulation for `Ctrl+C` / `Ctrl+V` capture and paste-back
+- **`windows` crate** &mdash; raw `SendInput` for all synthetic keystrokes, `WH_KEYBOARD_LL` for the autocorrect hook, UI Automation for password-field detection
+- **SymSpell** &mdash; 82,833-entry frequency dictionary compiled into the binary for offline autocorrect
 - **keyring (windows-native)** &mdash; per-provider API key storage
 
 ## Configuration
@@ -180,7 +212,7 @@ NSIS installer lands in `src-tauri/target/release/bundle/nsis/R3write_<version>_
 For a full release cut (version bump in all three manifests, CHANGELOG promote, build, tag, push, and GitHub release with notes), use the helper. The installer is distributed via [Lemon Squeezy](https://drknowhow.lemonsqueezy.com) — upload it there after each build.
 
 ```bash
-scripts/release.sh 1.4.0
+scripts/release.sh 1.5.0
 ```
 
 Run it from anywhere inside the repo. It refuses to proceed unless you're on `main`, the working tree is clean, you're in sync with origin, the tag doesn't already exist, and the `[Unreleased]` section in `CHANGELOG.md` has content (which becomes the release notes verbatim).
@@ -191,24 +223,51 @@ Run it from anywhere inside the repo. It refuses to proceed unless you're on `ma
 R3write/
 ├── README.md
 ├── CHANGELOG.md
-├── docs/
+├── docs/                        # GitHub Pages site
+│   ├── index.html
+│   ├── ai-transparency.html     # full AI disclosure
+│   ├── styles.css
 │   ├── icon.png
 │   └── screenshots/             # the shots used above
 ├── index.html                   # main window — pre-hydration theme boot
 ├── quick-edit.html              # popup window — pre-hydration theme boot
-├── vite.config.ts               # multi-page input (main + quick-edit)
+├── autocorrect-bubble.html      # correction toast window
+├── vite.config.ts               # multi-page input (main + quick-edit + bubble)
 ├── src/
 │   ├── entry-main.tsx           # renders <App />
 │   ├── entry-quick-edit.tsx     # renders <QuickEdit />
+│   ├── entry-autocorrect-bubble.tsx
 │   ├── main.tsx                 # App, QuickEdit, provider clients, dialogs
+│   ├── AutocorrectBubble.tsx    # correction toast — its own 3 kB bundle
+│   ├── autocorrect.ts           # JS side of the Rust autocorrect bridge
+│   ├── license.ts               # Lemon Squeezy activation
 │   ├── theme.ts                 # useTheme() hook, View Transitions crossfade
 │   └── index.css                # Tailwind + design tokens + prose styles
 └── src-tauri/
     ├── Cargo.toml
-    ├── tauri.conf.json          # two windows: main + quick-edit
+    ├── tauri.conf.json          # three windows: main + quick-edit + autocorrect-bubble
     ├── capabilities/default.json
-    └── src/main.rs              # hotkeys + capture + paste-back + autostart + keyring
+    ├── installer/               # forked NSIS template + pristine upstream copy
+    ├── resources/               # SymSpell frequency dictionary
+    └── src/
+        ├── main.rs              # hotkeys + capture + paste-back + autostart + keyring
+        └── autocorrect/         # hook, buffer, dict, shape, target, inject, bubble
 ```
+
+## AI transparency
+
+R3write is an AI system, and it is built with AI. Both are worth stating plainly. The full disclosure lives at **[drknowhow.github.io/R3write/ai-transparency.html](https://drknowhow.github.io/R3write/ai-transparency.html)**; the short version:
+
+- **Its output is machine-generated.** Every rewrite comes from a language model, not from rules. Models invent specifics, drop qualifiers that mattered, and strengthen claims you deliberately hedged. Read the rewrite before you accept it — that is what the diff view is for. The popup carries a permanent `AI-generated · review before use` line, and `Settings → AI` names the provider and model in use.
+- **R3write ships no model and runs no server.** Requests go from your machine to the provider *you* configured, with *your* key, over a direct connection. Nothing is proxied, mirrored or logged anywhere the author can reach.
+- **Three paths send anything at all:** a cloud provider (the selection + prompt), autocorrect's optional contextual check (one word + ≤80 characters of context, **off by default**), and license activation (key + machine id, no document text). Local Ollama and the offline dictionary send nothing.
+- **No telemetry, and no training on your text.** Once text reaches a provider, that provider's terms govern it — worth reading rather than assuming, especially on free tiers.
+- **R3write itself was built with AI assistance.** Its Rust and TypeScript, its website and much of this documentation were written by the author working with AI coding assistants. Review and responsibility are the author's; the keystrokes largely were not. The source is public so that claim is checkable.
+- **If you publish what you rewrite,** EU AI Act Art. 50(4) may require *you* to label AI-generated text published to inform the public on matters of public interest, unless a person has genuinely reviewed it. R3write cannot discharge that for you.
+
+On machine-readable marking (Art. 50(2)): R3write does not currently embed a marker in the text it pastes back — it writes plain text through the clipboard, which has no metadata channel that survives the paste. The transitional deadline is 2 December 2026 and the approach is being worked out in the open; [issues welcome](https://github.com/drknowhow/R3write/issues).
+
+*Descriptive, not legal advice — see the full page for the caveat.*
 
 ## About
 
@@ -243,10 +302,13 @@ R3write is free during beta thanks to people who tip and sponsor it. Sponsorship
 - No single-instance lock or auto-updater yet (autostart is shipped).
 - Code signing isn't configured; Windows SmartScreen will warn on install.
 - Popup is anchored to the mouse, not the text caret &mdash; keyboard-only users may see it land somewhere unrelated. Caret-anchored positioning is tracked for a future release.
+- Autocorrect does not run in browsers or Electron apps yet, because Windows only reports password fields for native text boxes and Chromium draws its own. The refusal is deliberately conservative until that gap closes.
+- Autocorrect draws no in-place underline and will not: R3write cannot render inside another app's text field, and a caret-anchored overlay has no caret to anchor to in Chromium, Electron or Java apps. The bottom-right toast is the affordance.
+- Rewritten text carries no machine-readable AI marker &mdash; see [AI transparency](#ai-transparency).
 
 ## Changelog
 
-Full history in [`CHANGELOG.md`](./CHANGELOG.md). Latest: **1.3.0** &mdash; Google Gemini provider and the provider tier taxonomy.
+Full history in [`CHANGELOG.md`](./CHANGELOG.md). Latest: **1.5.0** &mdash; system-wide offline autocorrect, and the AI transparency disclosures.
 
 ## License
 

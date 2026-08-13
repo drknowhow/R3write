@@ -7,14 +7,14 @@
     <title>R3write — Inline AI rewrite for Windows</title>
     <meta
       name="description"
-      content="Select text in any Windows app, press Ctrl+Alt+G, pick an action, paste the rewrite back. Local by default with free Ollama; multi-provider for speed — Gemini, OpenAI, Anthropic, Groq, OpenRouter, Ollama Cloud."
+      content="Select text in any Windows app, press Ctrl+Alt+G, pick an action, paste the rewrite back — plus offline autocorrect that fixes typos as you type. Local by default with free Ollama; multi-provider for speed — Gemini, OpenAI, Anthropic, Groq, OpenRouter, Ollama Cloud."
     />
     <link rel="icon" type="image/png" href="favicon.png" />
     <link rel="canonical" href="https://drknowhow.github.io/R3write/" />
     <meta property="og:title" content="R3write — Inline AI rewrite for Windows" />
     <meta
       property="og:description"
-      content="One hotkey, any app. Free local Ollama or multi-provider cloud. Your keys, your data."
+      content="One hotkey, any app — plus offline autocorrect while you type. Free local Ollama or multi-provider cloud. Your keys, your data."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://drknowhow.github.io/R3write/" />
@@ -31,7 +31,9 @@
         </a>
         <nav class="nav">
           <a href="#features">Features</a>
+          <a href="#autocorrect">Autocorrect</a>
           <a href="#providers">Providers</a>
+          <a href="#ai">AI&nbsp;transparency</a>
           <a href="#about">About</a>
           <a class="nav-cta" href="https://github.com/drknowhow/R3write/releases/latest/download/R3write-setup.exe">Download</a>
           <a class="nav-ghost" href="https://github.com/drknowhow/R3write" aria-label="GitHub repository">GitHub →</a>
@@ -42,7 +44,7 @@
     <main id="top">
       <section class="hero">
         <div class="container">
-          <p class="eyebrow">v1.4.0 · Windows 10/11</p>
+          <p class="eyebrow">v1.5.0 · Windows 10/11</p>
           <h1 class="hero-title">
             Inline AI rewrite,<br />without leaving the app you're in.
           </h1>
@@ -50,10 +52,14 @@
             Select text anywhere. Press <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>G</kbd>. Pick an action.
             Paste the result back. Free by default with local Ollama; multi-provider for speed when you want it.
           </p>
+          <p class="hero-sub hero-sub-new">
+            <span class="pill-new">New in 1.5</span> System-wide autocorrect fixes your typos as you
+            type — offline, in the applications you choose, off until you turn it on.
+          </p>
           <div class="cta-row">
             <a class="btn btn-primary" href="https://github.com/drknowhow/R3write/releases/latest/download/R3write-setup.exe">
               Download for Windows
-              <span class="btn-sub">Free · NSIS installer · ~3.6&nbsp;MB</span>
+              <span class="btn-sub">Free to install · NSIS · Windows 10/11</span>
             </a>
             <a class="btn btn-ghost" href="https://drknowhow.lemonsqueezy.com/checkout/buy/627f5ad5-2aa2-4503-b79a-245e53abdbb3">
               Get activation key
@@ -61,7 +67,10 @@
             </a>
           </div>
           <p class="hero-note">
-            Free to install. Paste your Lemon Squeezy license key on first launch to unlock the app. Unsigned installer; SmartScreen shows "Unknown publisher" until the build is signed.
+            Free to install. Paste your Lemon Squeezy license key on first launch to unlock the app.
+            Unsigned installer; SmartScreen shows "Unknown publisher" until the build is signed.
+            R3write is an AI system: rewrites are machine-generated and should be read before you use
+            them — <a href="#ai">what that means in practice</a>.
           </p>
         </div>
         <div class="container hero-image">
@@ -94,6 +103,10 @@
           <div class="value-card">
             <h3>Word-level diff</h3>
             <p>See exactly what changed every time. Green additions, red deletions, on the same surface.</p>
+          </div>
+          <div class="value-card">
+            <h3>Typos fixed offline</h3>
+            <p>Autocorrect runs against a dictionary bundled in the app. No network, no model, no key.</p>
           </div>
         </div>
       </section>
@@ -176,6 +189,117 @@
         </div>
       </section>
 
+      <section id="autocorrect" class="autocorrect">
+        <div class="container">
+          <p class="section-eyebrow">New in 1.5</p>
+          <h2 class="section-title">Autocorrect, system-wide and offline</h2>
+          <p class="section-sub">
+            The rewrite hotkey handles the paragraph you meant to write. Autocorrect handles the word
+            you didn't. It watches typing in the applications <em>you</em> list, and when you finish a
+            word with a space, punctuation or <kbd>Enter</kbd>, it checks that word against a dictionary
+            bundled inside the app — 82,833 entries, no network, no model, no key — and fixes it in place.
+          </p>
+
+          <div class="ac-grid">
+            <div class="ac-copy">
+              <ul class="ac-list">
+                <li>
+                  <strong>Off until you turn it on.</strong> The installer offers it on an
+                  <em>Optional features</em> page, unchecked. That records a preference and nothing more —
+                  the keyboard hook is never installed until the app has both an active license and an
+                  explicit switch in <code>Settings → Autocorrect</code>.
+                </li>
+                <li>
+                  <strong>Your applications, not ours.</strong> Add apps by picking them from a list of
+                  what's running, by name, rather than knowing that Outlook is <code>outlook.exe</code>.
+                  The shipped list is Notepad, WordPad, Word and Outlook. Nothing outside your list is
+                  ever read.
+                </li>
+                <li>
+                  <strong>Undo that expires on purpose.</strong> A toast shows the correction with an
+                  <em>Undo</em> button; <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Z</kbd> reverts the last one
+                  whether the toast is still up or not. Both retire the moment reverting would land in
+                  the wrong place.
+                </li>
+                <li>
+                  <strong>Ranked by how typos actually happen.</strong> Candidates are scored by corpus
+                  frequency weighted by the shape of the edit — transpositions and doubled keystrokes
+                  first, adjacent-key slips next. Genuinely ambiguous words are left alone, and words
+                  that look like intended plurals are never quietly made singular.
+                </li>
+                <li>
+                  <strong>Keystrokes are never written to disk.</strong> The typing buffer lives in
+                  memory, is capped, and is cleared on every invalidation. Corrections — not keystrokes —
+                  are logged, and the log is yours to clear.
+                </li>
+              </ul>
+            </div>
+
+            <figure class="ac-figure">
+              <div class="mock">
+                <div class="mock-app">
+                  <span class="mock-app-name">Notepad</span>
+                  <p class="mock-text">Please review the <span class="mock-fixed">report</span><span class="mock-caret"></span></p>
+                </div>
+                <div class="mock-toast">
+                  <span class="mock-toast-body"><s>reprot</s> → <strong>report</strong></span>
+                  <span class="mock-toast-actions">
+                    <span class="mock-btn">Undo</span>
+                    <span class="mock-x">×</span>
+                  </span>
+                </div>
+              </div>
+              <figcaption>
+                Illustration of the correction toast — bottom-right, never takes focus, fades after 4&nbsp;s.
+              </figcaption>
+            </figure>
+          </div>
+
+          <h3 class="ac-sub">Where it refuses to run</h3>
+          <p class="ac-sub-note">
+            Autocorrect fails closed. When a check can't answer, that counts as a refusal — silence is
+            never read as permission.
+          </p>
+          <div class="ac-refuse">
+            <div class="refuse-card">
+              <h4>Password fields</h4>
+              <p>
+                Two independent checks — the Win32 field style and a UI Automation probe. Either one
+                saying "password" refuses, and <em>neither</em> being able to answer refuses too.
+              </p>
+            </div>
+            <div class="refuse-card">
+              <h4>Elevated windows</h4>
+              <p>A non-elevated app cannot send input to an elevated one, so those are skipped outright.</p>
+            </div>
+            <div class="refuse-card">
+              <h4>Remote desktop</h4>
+              <p>The shadow buffer tracks local keystrokes; a remote session's text isn't local.</p>
+            </div>
+            <div class="refuse-card">
+              <h4>IME and CJK input</h4>
+              <p>Composition-based input has no single committed word to correct.</p>
+            </div>
+            <div class="refuse-card">
+              <h4>Browsers and Electron apps</h4>
+              <p>
+                For now. Windows only reports "this is a password field" for native text boxes, and
+                Chromium draws its own — so the refusal is conservative until that gap closes.
+              </p>
+            </div>
+            <div class="refuse-card refuse-warn">
+              <h4>Terminals — allowed, with a warning</h4>
+              <p>
+                You <em>can</em> add <code>cmd.exe</code> or <code>powershell.exe</code>; they're flagged
+                and off the default list. A shell password prompt isn't a password <em>field</em>, so
+                nothing can detect it — and <kbd>Enter</kbd> runs the line, so a correction landing on a
+                path or a flag executes something you didn't type.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section id="providers" class="providers">
         <div class="container">
           <h2 class="section-title">Pick a provider</h2>
@@ -240,6 +364,82 @@
               </tbody>
             </table>
           </div>
+        </div>
+      </section>
+
+      <section id="ai" class="ai">
+        <div class="container">
+          <h2 class="section-title">AI transparency</h2>
+          <p class="section-sub">
+            R3write is an AI system, and it is built with AI. Both are worth saying plainly rather
+            than leaving you to infer them.
+          </p>
+
+          <div class="ai-grid">
+            <div class="ai-card">
+              <h3>Its output is machine-generated</h3>
+              <p>
+                Every rewrite — <em>Improve</em>, <em>Fix&nbsp;grammar</em>, <em>Shorten</em>,
+                <em>Expand</em>, <em>Tone</em>, <em>Prompt</em>, <em>Custom</em> — is produced by a large
+                language model, not by rules. Models restate things you didn't say, drop qualifiers that
+                mattered, and are confidently wrong. Read the rewrite before you accept it. That is what
+                the diff view is for.
+              </p>
+              <p>
+                The app says so where the output appears, not only here: the quick-edit popup carries a
+                permanent <span class="ai-chip">AI-generated · review before use</span> line.
+              </p>
+            </div>
+
+            <div class="ai-card">
+              <h3>What leaves your machine</h3>
+              <p>There are exactly three paths, and you choose which are live:</p>
+              <ol class="ai-paths">
+                <li>
+                  <strong>Local Ollama</strong> — nothing leaves. The model runs on your machine.
+                </li>
+                <li>
+                  <strong>A cloud provider</strong> — the text you selected and your prompt go to the
+                  provider <em>you</em> configured, using <em>your</em> key, over a direct connection.
+                  R3write operates no server and proxies nothing.
+                </li>
+                <li>
+                  <strong>Autocorrect's contextual check</strong> — off by default, and separate from the
+                  autocorrect switch. When on, a single confusable word plus up to 80 characters of
+                  preceding context goes to your configured provider. It can only ever
+                  <em>suggest</em>; applying is a button you press.
+                </li>
+              </ol>
+              <p>
+                The offline autocorrect dictionary sends nothing anywhere. There is no telemetry, no
+                analytics, and no usage reporting in any path.
+              </p>
+            </div>
+
+            <div class="ai-card">
+              <h3>R3write was built with AI</h3>
+              <p>
+                The application itself — its Rust and TypeScript, this website, and much of its
+                documentation — was written by its author working with AI coding assistants. Every
+                change was reviewed and is the author's responsibility, but the code is not
+                hand-typed from scratch and saying otherwise would be misleading.
+              </p>
+            </div>
+
+            <div class="ai-card">
+              <h3>If you publish what you rewrite</h3>
+              <p>
+                Under the EU AI Act's transparency rules, text generated or materially altered by AI and
+                published to inform the public on a matter of public interest must be labelled as such
+                by whoever publishes it — unless a person has genuinely reviewed it and taken editorial
+                responsibility. R3write cannot do that for you; it happens at the moment you publish.
+              </p>
+            </div>
+          </div>
+
+          <p class="ai-more">
+            <a class="btn btn-ghost" href="ai-transparency.html">Read the full AI disclosure →</a>
+          </p>
         </div>
       </section>
 
@@ -335,6 +535,7 @@
               <li>Grab a license key at the Lemon Squeezy checkout (pay what you want, $5 min) — the in-app gate has a one-click link.</li>
               <li>Paste the key on first launch to activate; then set up a provider (default Ollama Cloud, free tier).</li>
               <li>Select text in any app, press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>G</kbd>, pick an action, accept &amp; paste.</li>
+              <li>Optional: turn on autocorrect in <code>Settings → Autocorrect</code> and add the apps you want it in.</li>
             </ol>
             <div class="cta-row">
               <a class="btn btn-primary" href="https://github.com/drknowhow/R3write/releases/latest/download/R3write-setup.exe">
@@ -369,6 +570,7 @@ npm run tauri:dev</code></pre>
           <span>R3write</span>
         </div>
         <nav class="footer-nav">
+          <a href="ai-transparency.html">AI transparency</a>
           <a href="https://github.com/drknowhow/R3write">GitHub</a>
           <a href="https://github.com/drknowhow/R3write/blob/main/CHANGELOG.md">Changelog</a>
           <a href="https://github.com/drknowhow/R3write/releases">Releases</a>
@@ -378,6 +580,10 @@ npm run tauri:dev</code></pre>
         </nav>
         <p class="footer-meta">
           © <span id="year"></span> <a href="https://github.com/drknowhow">drknowhow</a> · Built with Tauri 2.
+        </p>
+        <p class="footer-ai">
+          R3write is an AI system and its output is machine-generated. R3write and this site were built
+          with AI assistance. <a href="ai-transparency.html">Full disclosure</a>.
         </p>
       </div>
     </footer>
